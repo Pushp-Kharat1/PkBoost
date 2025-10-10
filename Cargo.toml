@@ -1,0 +1,41 @@
+[package]
+name = "pkboost"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
+rayon = "1.8"
+csv = "1.3"
+mimalloc = "0.1"
+num_cpus = "1.16"
+ndarray = { version = "0.16.1", features = ["rayon"] }
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "test_living"
+path = "src/bin/test_living.rs"
+
+[[bin]]
+name = "test_drift"
+path = "src/bin/test_drift.rs"
+
+[[bin]]
+name = "test_static"
+path = "src/bin/test_static.rs"
+
+[[bin]]
+name = "test_retrain"
+path = "src/bin/test_retrain.rs"
+
+[lib]
+name = "pkboost"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

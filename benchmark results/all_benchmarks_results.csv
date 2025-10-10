@@ -1,0 +1,5 @@
+dataset,lightgbm_roc_auc,lightgbm_pr_auc,lightgbm_accuracy,lightgbm_f1,lightgbm_train_time,lightgbm_inference_time,xgboost_roc_auc,xgboost_pr_auc,xgboost_accuracy,xgboost_f1,xgboost_train_time,xgboost_inference_time,pkboost_f1,pkboost_accuracy
+Credit Card Fraud,0.92049,0.79308,0.9988,0.713,2.82,0.0094,0.91663,0.74464,0.9994,0.7978,6.7,0.0175,0.8715,0.9996
+Pima Indians Diabetes,0.78395,0.66754,0.7468,0.5979,0.16,0.0027,0.76069,0.5882,0.7013,0.5208,0.2,0.0017,0.6462,0.7013
+Breast Cancer Wisconsin,0.98909,0.98717,0.9737,0.963,0.11,0.001,0.99405,0.99228,0.9649,0.9512,1.57,0.0017,0.9756,0.9825
+Telco Customer Churn,0.83256,0.62846,0.7928,0.5394,0.67,0.0018,0.82649,0.61509,0.7771,0.5327,0.46,0.0014,0.6273,0.758
