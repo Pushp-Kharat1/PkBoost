@@ -1,6 +1,48 @@
 use crate::model::OptimizedPKBoostShannon;
 use crate::adaptive_parallel::get_parallel_config;
 
+pub struct VulnerabilityCalibration {
+    pub baseline_vulnerability: f64,
+    pub alert_threshold: f64,
+    pub metamorphosis_threshold: f64,
+}
+
+impl VulnerabilityCalibration {
+    pub fn calibrate(
+        model: &OptimizedPKBoostShannon,
+        x_val: &Vec<Vec<f64>>,
+        y_val: &[f64],
+    ) -> Self {
+        let preds = model.predict_proba(x_val).unwrap_or_default();
+        let pos_ratio = y_val.iter().sum::<f64>() / y_val.len() as f64;
+        let pos_class_weight = (1.0 / pos_ratio).min(1000.0);
+        
+        let mut vulnerabilities = Vec::new();
+        for (i, (&pred, &true_y)) in preds.iter().zip(y_val.iter()).enumerate() {
+            let confidence = (pred - 0.5).abs() * 2.0;
+            let error = (true_y - pred).abs();
+            let class_weight = if true_y > 0.5 { pos_class_weight } else { 1.0 };
+            let vuln = confidence * error.powi(2) * class_weight;
+            vulnerabilities.push(vuln);
+        }
+        
+        let baseline = vulnerabilities.iter().sum::<f64>() / vulnerabilities.len().max(1) as f64;
+        
+        let (alert_thresh, meta_thresh) = match pos_ratio {
+            p if p < 0.02 => (baseline * 1.5, baseline * 2.0),
+            p if p < 0.10 => (baseline * 1.8, baseline * 2.5),
+            p if p < 0.20 => (baseline * 2.0, baseline * 3.0),
+            _ => (baseline * 2.5, baseline * 3.5),
+        };
+        
+        Self {
+            baseline_vulnerability: baseline,
+            alert_threshold: alert_thresh,
+            metamorphosis_threshold: meta_thresh,
+        }
+    }
+}
+
 pub fn auto_tune_principled(model: &mut OptimizedPKBoostShannon, n_samples: usize, n_features: usize, pos_ratio: f64) {
     let _config = get_parallel_config();
     

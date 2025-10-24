@@ -41,10 +41,13 @@ impl AdversarialEnsemble {
     }
     
     pub fn record_vulnerability(&mut self, vuln: Vulnerability) {
-        if self.recent_vulnerabilities.len() >= self.vulnerability_window {
-            self.recent_vulnerabilities.pop_front();
+        // Only record if there's actual error (threshold: 0.3)
+        if vuln.error > 0.3 {
+            if self.recent_vulnerabilities.len() >= self.vulnerability_window {
+                self.recent_vulnerabilities.pop_front();
+            }
+            self.recent_vulnerabilities.push_back(vuln);
         }
-        self.recent_vulnerabilities.push_back(vuln);
     }
     
     pub fn get_vulnerability_score(&self) -> f64 {
@@ -64,15 +67,15 @@ impl AdversarialEnsemble {
         let confidence = (primary_pred - 0.5).abs() * 2.0;  // how sure was the model?
         let error = (y_true - primary_pred).abs();
         
-        // weight errors on minority class more heavily
+        // weight errors on minority class more (but normalized to 0-1 range)
         let class_weight = if y_true > 0.5 {
-            self.pos_class_weight
+            (self.pos_class_weight / 100.0).min(5.0)  // cap at 5x weight
         } else {
             1.0
         };
         
-        // confident mistakes on minority class = high vulnerability
-        let vulnerability_strength = confidence * error.powi(2) * class_weight;
+        // confident mistakes = high vulnerability (normalized to 0-1)
+        let vulnerability_strength = (confidence * error * class_weight).min(1.0);
         
         Vulnerability {
             confidence: vulnerability_strength, 

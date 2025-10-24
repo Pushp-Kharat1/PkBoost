@@ -84,15 +84,128 @@ fn evaluate_and_observe_batch(
     Ok(pr_auc)
 }
 
+fn diagnostic_main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n=== VULNERABILITY SYSTEM DIAGNOSTIC ===\n");
+
+    let dataset = std::env::var("DRIFT_DATASET").unwrap_or_else(|_| "creditcard".to_string());
+    println!("Dataset: {}\n", dataset);
+
+    let (x_train, y_train) = load_data(&format!("data/synthetic_financial_train.csv"))?;
+    let (x_val, y_val) = load_data(&format!("data/synthetic_financial_val.csv", ))?;
+    let (mut x_test, y_test) = load_data(&format!("data/synthetic_financial_test.csv",))?;
+    
+    let mut alb = AdversarialLivingBooster::new(&x_train, &y_train);
+    alb.fit_initial(&x_train, &y_train, Some((&x_val, &y_val)), false)?;
+    
+    println!("=== PHASE 1: NORMAL DATA ===");
+    let batch_size = 5000;
+    let first_batch = &x_test[0..batch_size.min(x_test.len())].to_vec();
+    let first_labels = &y_test[0..batch_size.min(y_test.len())].to_vec();
+    
+    let preds_normal = alb.predict_proba(first_batch)?;
+    
+    println!("Predictions on normal data:");
+    println!("  Min pred: {:.6}", preds_normal.iter().cloned().fold(f64::INFINITY, f64::min));
+    println!("  Max pred: {:.6}", preds_normal.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+    println!("  Mean pred: {:.6}", preds_normal.iter().sum::<f64>() / preds_normal.len() as f64);
+    
+    // Count errors on minority class
+    let mut errors_on_pos = 0;
+    let mut total_pos = 0;
+    for (i, &true_label) in first_labels.iter().enumerate() {
+        if true_label > 0.5 {
+            total_pos += 1;
+            let pred_class = if preds_normal[i] >= 0.5 { 1 } else { 0 };
+            if (pred_class as f64 - true_label).abs() > 0.5 {
+                errors_on_pos += 1;
+            }
+        }
+    }
+    println!("  Errors on positive class: {}/{}", errors_on_pos, total_pos);
+    
+    alb.observe_batch(first_batch, first_labels, false)?;
+    println!("  Vulnerability score after normal: {:.6}\n", alb.get_vulnerability_score());
+    
+    // Apply drift
+    println!("=== APPLYING DRIFT ===");
+    let drift_features = vec![5, 10, 15, 20, 25];
+    for row in x_test.iter_mut() {
+        for &feat_idx in &drift_features {
+            if feat_idx < row.len() {
+                row[feat_idx] = -row[feat_idx] + 10.0;
+            }
+        }
+    }
+    
+    // Test on drifted data
+    println!("=== PHASE 2: DRIFTED DATA ===");
+    let drifted_batch = &x_test[batch_size..2*batch_size].to_vec();
+    let drifted_labels = &y_test[batch_size..2*batch_size].to_vec();
+    
+    let preds_drifted = alb.predict_proba(drifted_batch)?;
+    
+    println!("Predictions on drifted data:");
+    println!("  Min pred: {:.6}", preds_drifted.iter().cloned().fold(f64::INFINITY, f64::min));
+    println!("  Max pred: {:.6}", preds_drifted.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+    println!("  Mean pred: {:.6}", preds_drifted.iter().sum::<f64>() / preds_drifted.len() as f64);
+    
+    // Count errors on minority class
+    let mut errors_on_pos_drift = 0;
+    let mut total_pos_drift = 0;
+    for (i, &true_label) in drifted_labels.iter().enumerate() {
+        if true_label > 0.5 {
+            total_pos_drift += 1;
+            let pred_class = if preds_drifted[i] >= 0.5 { 1 } else { 0 };
+            if (pred_class as f64 - true_label).abs() > 0.5 {
+                errors_on_pos_drift += 1;
+            }
+        }
+    }
+    println!("  Errors on positive class: {}/{}", errors_on_pos_drift, total_pos_drift);
+    
+    // Manually compute vulnerability scores for a few samples
+    println!("\n=== MANUAL VULNERABILITY CHECK ===");
+    println!("Checking individual sample vulnerabilities...");
+    for i in 0..10.min(drifted_labels.len()) {
+        if drifted_labels[i] > 0.5 {
+            let confidence = (preds_drifted[i] - 0.5).abs() * 2.0;
+            let error = (drifted_labels[i] - preds_drifted[i]).abs();
+            println!("  Sample {}: pred={:.4}, true={:.1}, conf={:.4}, error={:.4}",
+                     i, preds_drifted[i], drifted_labels[i], confidence, error);
+        }
+    }
+    
+    alb.observe_batch(drifted_batch, drifted_labels, false)?;
+    let vuln_after = alb.get_vulnerability_score();
+    println!("\n  Vulnerability score after drift: {:.6}", vuln_after);
+    println!("  State: {:?}", alb.get_state());
+    
+    if vuln_after == 0.0 {
+        println!("\n  DIAGNOSTIC: Vulnerability score is still 0!");
+        println!("   This means either:");
+        println!("   1. Model predictions are correct even on drifted data (unlikely)");
+        println!("   2. Vulnerability recording isn't working");
+        println!("   3. There are no positive examples in the batch");
+    }
+    
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    // Uncomment to run diagnostic:
+    // return diagnostic_main();
+    
     println!("\n=== ADVERSARIAL LIVING BOOSTER (ALB) DRIFT SIMULATION ===\n");
+
+    let dataset = std::env::var("DRIFT_DATASET").unwrap_or_else(|_| "creditcard".to_string());
+    println!("Dataset: {}\n", dataset);
 
     let mut log_file = File::create("alb_metrics.csv")?;
     writeln!(log_file, "observation,phase,pr_auc,roc_auc,f1,vuln_score,state,metamorphosis_count")?;
     
-    let (x_train, y_train) = load_data("data/train_large.csv")?;
-    let (x_val, y_val) = load_data("data/val_large.csv")?;
-    let (mut x_test, y_test) = load_data("data/test_large.csv")?;
+    let (x_train, y_train) = load_data(&format!("data/{}_train.csv", dataset))?;
+    let (x_val, y_val) = load_data(&format!("data/{}_val.csv", dataset))?;
+    let (mut x_test, y_test) = load_data(&format!("data/{}_test.csv", dataset))?;
     
     println!("Creating Adversarial Living Booster...");
     let mut alb = AdversarialLivingBooster::new(&x_train, &y_train);

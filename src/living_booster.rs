@@ -3,10 +3,11 @@
 // to prune bad trees and grow new ones on recent data
 
 use crate::model::OptimizedPKBoostShannon;
-use crate::adversarial::AdversarialEnsemble;
+use crate::adversarial::{AdversarialEnsemble, Vulnerability};
 use crate::metabolism::FeatureMetabolism;
 use crate::tree::{OptimizedTreeShannon, TreeParams};
 use crate::optimized_data::TransposedData;
+use crate::metrics::calculate_pr_auc;
 use rayon::prelude::*;
 use std::time::Instant;
 use std::collections::VecDeque;
@@ -19,6 +20,74 @@ pub enum SystemState {
     Metamorphosis,  // time to rebuild parts of the model
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MetamorphosisStrategy {
+    Conservative,
+    DataAware,
+    FeatureAware,
+}
+
+pub struct DriftAnalyzer {
+    feature_volatility: Vec<f64>,
+    minority_class_error_rate: f64,
+}
+
+impl DriftAnalyzer {
+    pub fn new(n_features: usize) -> Self {
+        Self {
+            feature_volatility: vec![0.0; n_features],
+            minority_class_error_rate: 0.0,
+        }
+    }
+    
+    pub fn update(&mut self, recent_x: &VecDeque<Vec<f64>>, recent_y: &VecDeque<f64>, vulnerabilities: &VecDeque<Vulnerability>) {
+        if recent_x.is_empty() { return; }
+        
+        let mut minority_errors = 0;
+        let mut minority_total = 0;
+        for (i, &true_y) in recent_y.iter().enumerate() {
+            if true_y > 0.5 {
+                minority_total += 1;
+                for vuln in vulnerabilities.iter().take(1000) {
+                    if vuln.sample_idx == i && vuln.error > 0.3 {
+                        minority_errors += 1;
+                        break;
+                    }
+                }
+            }
+        }
+        self.minority_class_error_rate = if minority_total > 0 {
+            minority_errors as f64 / minority_total as f64
+        } else { 0.0 };
+        
+        let n_features = recent_x.get(0).map(|r| r.len()).unwrap_or(0);
+        for feat_idx in 0..n_features {
+            let mut vals: Vec<f64> = recent_x.iter()
+                .filter_map(|row| row.get(feat_idx).copied().filter(|v| !v.is_nan()))
+                .collect();
+            if vals.is_empty() { continue; }
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = vals[vals.len() / 2];
+            let variance: f64 = vals.iter().map(|v| (v - median).powi(2)).sum::<f64>() / vals.len() as f64;
+            self.feature_volatility[feat_idx] = variance.sqrt();
+        }
+    }
+    
+    pub fn select_strategy(&self) -> MetamorphosisStrategy {
+        let avg_volatility = self.feature_volatility.iter().sum::<f64>() / self.feature_volatility.len().max(1) as f64;
+        let corruption_score = ((avg_volatility / 10.0).min(1.0) * self.minority_class_error_rate * 2.0).min(1.0);
+        let concept_drift_score = if avg_volatility < 3.0 && self.minority_class_error_rate > 0.3 { 0.8 } else { 0.0 };
+        
+        if corruption_score > 0.6 && corruption_score > concept_drift_score {
+            MetamorphosisStrategy::FeatureAware
+        } else if concept_drift_score > 0.7 {
+            MetamorphosisStrategy::DataAware
+        } else {
+            MetamorphosisStrategy::Conservative
+        }
+    }
+}
+
 pub struct AdversarialLivingBooster {
     primary: OptimizedPKBoostShannon,  // main gradient boosting model
     adversary: AdversarialEnsemble,  // tracks where the model is failing
@@ -26,7 +95,9 @@ pub struct AdversarialLivingBooster {
     state: SystemState,
     alert_trigger_threshold: usize,
     metamorphosis_trigger_threshold: usize,
-    vulnerability_threshold: f64,  // how bad does performance need to get?
+    vulnerability_alert_threshold: f64,
+    vulnerability_metamorphosis_threshold: f64,
+    baseline_vulnerability: f64,
     consecutive_vulnerable_checks: usize,
     observations_count: usize,
     metamorphosis_count: usize,  // how many times we've adapted
@@ -35,6 +106,10 @@ pub struct AdversarialLivingBooster {
     buffer_size: usize,
     metamorphosis_cooldown: usize,  // dont adapt too frequently
     iterations_since_metamorphosis: usize,
+    drift_analyzer: DriftAnalyzer,
+    last_strategy: MetamorphosisStrategy,
+    recent_pr_aucs: VecDeque<f64>,
+    baseline_pr_auc: f64,
 }
 
 impl AdversarialLivingBooster {
@@ -54,14 +129,9 @@ impl AdversarialLivingBooster {
             "balanced"
         };
         
-        // more imbalanced data = lower threshold for triggering adaptation
-        // because even small changes can be catastrophic
-        let vuln_threshold = match imbalance_level {
-            "extreme" => 0.01,
-            "high" => 0.0145,
-            "moderate" => 0.02,
-            _ => 0.025
-        };
+        // Default thresholds (will be calibrated during fit_initial)
+        let vuln_alert_threshold = 0.02;
+        let vuln_meta_threshold = 0.03;
         
         // smaller datasets = be more agressive with adaptation
         let (alert_thresh, meta_thresh) = if n_samples < 50_000 {
@@ -92,11 +162,11 @@ impl AdversarialLivingBooster {
         println!("\n=== Adaptive Metamorphosis Configuration ===");
         println!("Dataset: {} samples, {} features", n_samples, n_features);
         println!("Positive ratio: {:.1}% ({})", pos_ratio * 100.0, imbalance_level);
-        println!("Vulnerability threshold: {:.4}", vuln_threshold);
         println!("Alert trigger: {} consecutive checks", alert_thresh);
         println!("Metamorphosis trigger: {} checks in alert", meta_thresh);
         println!("Buffer size: {} samples", buffer_sz);
         println!("Cooldown period: {} observations", cooldown);
+        println!("Note: Vulnerability thresholds will be calibrated during fit_initial");
         println!("===========================================\n");
         
         Self {
@@ -106,7 +176,9 @@ impl AdversarialLivingBooster {
             state: SystemState::Normal,
             alert_trigger_threshold: alert_thresh,
             metamorphosis_trigger_threshold: meta_thresh,
-            vulnerability_threshold: vuln_threshold,
+            vulnerability_alert_threshold: vuln_alert_threshold,
+            vulnerability_metamorphosis_threshold: vuln_meta_threshold,
+            baseline_vulnerability: 0.0,
             consecutive_vulnerable_checks: 0,
             observations_count: 0,
             metamorphosis_count: 0,
@@ -115,6 +187,10 @@ impl AdversarialLivingBooster {
             buffer_size: buffer_sz,
             metamorphosis_cooldown: cooldown,
             iterations_since_metamorphosis: 0,
+            drift_analyzer: DriftAnalyzer::new(n_features),
+            last_strategy: MetamorphosisStrategy::Conservative,
+            recent_pr_aucs: VecDeque::with_capacity(5),
+            baseline_pr_auc: 0.0,
         }
     }
     
@@ -129,6 +205,23 @@ impl AdversarialLivingBooster {
             println!("\n=== INITIAL TRAINING (Adversarial Living Booster) ===");
         }
         self.primary.fit(x, y, eval_set, verbose)?;
+        
+        // Calibrate vulnerability thresholds on validation set
+        if let Some((x_val, y_val)) = eval_set {
+            let calibration = crate::auto_tuner::VulnerabilityCalibration::calibrate(
+                &self.primary,
+                x_val,
+                y_val,
+            );
+            self.baseline_vulnerability = calibration.baseline_vulnerability;
+            self.vulnerability_alert_threshold = calibration.alert_threshold;
+            self.vulnerability_metamorphosis_threshold = calibration.metamorphosis_threshold;
+            
+            if verbose {
+                println!("Vulnerability thresholds configured based on validation data");
+            }
+        }
+        
         if verbose {
             println!("Initial training complete. Model ready for streaming.");
         }
@@ -156,6 +249,13 @@ impl AdversarialLivingBooster {
         }
         
         let primary_preds = self.primary.predict_proba(x)?;
+        
+        // Track PR-AUC for performance-based triggering
+        let batch_pr_auc = calculate_pr_auc(y, &primary_preds);
+        self.recent_pr_aucs.push_back(batch_pr_auc);
+        if self.recent_pr_aucs.len() > 5 {
+            self.recent_pr_aucs.pop_front();
+        }
         
         // check where the model is screwing up
         for (i, (&pred, &true_y)) in primary_preds.iter().zip(y.iter()).enumerate() {
@@ -197,7 +297,25 @@ impl AdversarialLivingBooster {
     // state machine logic - decide if we need to go into alert or metamorphosis
     fn update_state(&mut self, verbose: bool) {
         let vuln_score = self.get_vulnerability_score();
-        let is_vulnerable = vuln_score > self.vulnerability_threshold;
+        
+        // Performance-based check
+        let (performance_degraded, recent_avg) = if self.recent_pr_aucs.len() >= 3 && self.baseline_pr_auc > 0.0 {
+            let avg: f64 = self.recent_pr_aucs.iter().sum::<f64>() / self.recent_pr_aucs.len() as f64;
+            let degradation = (self.baseline_pr_auc - avg) / self.baseline_pr_auc;
+            (degradation > 0.15, avg)  // 15% drop
+        } else {
+            (false, 0.0)
+        };
+        
+        // DON'T trigger if model is performing well (within 5% of baseline)
+        if recent_avg >= self.baseline_pr_auc * 0.95 {
+            self.consecutive_vulnerable_checks = 0;
+            self.state = SystemState::Normal;
+            return;
+        }
+        
+        // Trigger if BOTH vulnerability AND performance degraded
+        let is_vulnerable = vuln_score > self.vulnerability_alert_threshold && performance_degraded;
         
         match self.state {
             SystemState::Normal => {
@@ -205,8 +323,8 @@ impl AdversarialLivingBooster {
                     self.consecutive_vulnerable_checks += 1;
                     if self.consecutive_vulnerable_checks >= self.alert_trigger_threshold {
                         if verbose { 
-                            println!("-- System state changed to ALERT after {} consecutive vulnerable checks --", 
-                                self.consecutive_vulnerable_checks); 
+                            println!("-- ALERT: Vulnerability score {:.4} > threshold {:.4} --", 
+                                vuln_score, self.vulnerability_alert_threshold); 
                         }
                         self.state = SystemState::Alert { checks_in_alert: 1 };
                     }
@@ -215,8 +333,12 @@ impl AdversarialLivingBooster {
                 }
             },
             SystemState::Alert { checks_in_alert } => {
-                if is_vulnerable {
+                if is_vulnerable && performance_degraded {
                     if checks_in_alert + 1 >= self.metamorphosis_trigger_threshold {
+                        if verbose {
+                            println!("-- METAMORPHOSIS: Vulnerability {:.4} + performance degraded {} checks --",
+                                vuln_score, checks_in_alert + 1);
+                        }
                         self.state = SystemState::Metamorphosis;
                     } else {
                         self.state = SystemState::Alert { checks_in_alert: checks_in_alert + 1 };
@@ -237,45 +359,41 @@ impl AdversarialLivingBooster {
     fn execute_metamorphosis(&mut self, verbose: bool) -> Result<(), String> {
         let metamorphosis_start = Instant::now();
         
-        // find features that havent been used in a while
         let dead_features = self.metabolism.get_dead_features();
         
         if verbose {
-            println!("  - Analyzing feature health...");
-            println!("    Dead features: {:?}", dead_features);
-            println!("    Buffer contains {} recent samples", self.recent_x.len());
+            println!("  - Dead features: {:?}", dead_features);
+            println!("  - Buffer: {} samples", self.recent_x.len());
         }
         
-        // Step 1: Prune trees dependent on dead features (less aggressive)
-        // remove trees that rely heavily on dead features
+        // Only prune if we have dead features, otherwise just retrain
         let pruned_count = if !dead_features.is_empty() {
             let count = self.primary.prune_trees(&dead_features, 0.8);
             if verbose {
-                println!("  - Pruned {} trees dependent on dead features.", count);
+                println!("  - Pruned {} trees", count);
             }
             count
         } else {
             0
         };
         
-        // grow new trees to replace the ones we pruned
-        if pruned_count > 0 {
-            let n_new_trees = pruned_count.min(10);  // dont go crazy
+        // Always add new trees on recent data
+        if self.recent_x.len() > 1000 {
+            let n_new_trees = if pruned_count > 0 { pruned_count.min(10) } else { 5 };
             
             if verbose {
-                println!("  - Adding {} replacement trees using recent buffer data...", n_new_trees);
+                println!("  - Adding {} new trees on buffer data", n_new_trees);
             }
             
             match self.add_incremental_trees(n_new_trees, verbose) {
                 Ok(added) => {
                     if verbose {
-                        println!("  - Successfully added {} new trees.", added);
+                        println!("  - Added {} trees", added);
                     }
                 },
                 Err(e) => {
                     if verbose {
-                        println!("  - Warning: Failed to add new trees: {}", e);
-                        println!("  - Continuing with pruned model.");
+                        println!("  - Warning: {}", e);
                     }
                 }
             }
@@ -290,10 +408,9 @@ impl AdversarialLivingBooster {
         
         if verbose {
             println!("=== METAMORPHOSIS COMPLETE ===");
-            println!("  - Pruned: {} trees", pruned_count);
             println!("  - Active trees: {}", self.primary.trees.len());
             println!("  - Total metamorphoses: {}", self.metamorphosis_count);
-            println!("  - Metamorphosis took: {:.2}s", metamorphosis_time.as_secs_f64());
+            println!("  - Took: {:.2}s", metamorphosis_time.as_secs_f64());
             println!();
         }
         
@@ -317,12 +434,30 @@ impl AdversarialLivingBooster {
         // get current predictions and convert to log-odds for gradient boosting
         let current_probs = self.primary.predict_proba(&buffer_x)?;
         
-        let mut raw_preds: Vec<f64> = current_probs.iter()
-            .map(|&p| {
-                let p_clamped = p.clamp(1e-7, 1.0 - 1e-7);
-                (p_clamped / (1.0 - p_clamped)).ln()  // logit transform
-            })
-            .collect();
+        // Check drift severity
+        let avg_error: f64 = current_probs.iter().zip(buffer_y.iter())
+            .map(|(pred, true_y)| (pred - true_y).abs())
+            .sum::<f64>() / buffer_y.len() as f64;
+        
+        let catastrophic_threshold = 0.35;
+        let use_reset = avg_error > catastrophic_threshold;
+        
+        if verbose {
+            println!("    - Drift assessment: avg error = {:.4}, reset = {}", avg_error, use_reset);
+        }
+        
+        let mut raw_preds: Vec<f64> = if use_reset {
+            // Catastrophic drift - reset to neutral base score
+            vec![0.0; buffer_x.len()]
+        } else {
+            // Normal drift - use current predictions
+            current_probs.iter()
+                .map(|&p| {
+                    let p_clamped = p.clamp(1e-7, 1.0 - 1e-7);
+                    (p_clamped / (1.0 - p_clamped)).ln()  // logit transform
+                })
+                .collect()
+        };
         
         let histogram_builder = self.primary.histogram_builder.as_ref()
             .ok_or("Histogram builder not initialized")?;

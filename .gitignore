@@ -1,0 +1,40 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Data files (optional - uncomment if you want to exclude large datasets)
+# data/*.csv
+
+# Output files
+*.png
+*.csv
+alb_metrics.csv
+drift_comparison_*.png
+real_world_benchmark_results.csv
+
+# Logs
+*.log
