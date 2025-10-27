@@ -217,7 +217,12 @@ impl AdversarialLivingBooster {
             self.vulnerability_alert_threshold = calibration.alert_threshold;
             self.vulnerability_metamorphosis_threshold = calibration.metamorphosis_threshold;
             
+            // Set baseline PR-AUC for performance tracking
+            let val_preds = self.primary.predict_proba(x_val)?;
+            self.baseline_pr_auc = calculate_pr_auc(y_val, &val_preds);
+            
             if verbose {
+                println!("Baseline PR-AUC: {:.4}", self.baseline_pr_auc);
                 println!("Vulnerability thresholds configured based on validation data");
             }
         }
@@ -359,9 +364,14 @@ impl AdversarialLivingBooster {
     fn execute_metamorphosis(&mut self, verbose: bool) -> Result<(), String> {
         let metamorphosis_start = Instant::now();
         
+        // CHECKPOINT: Save state before metamorphosis
+        let checkpoint_trees = self.primary.trees.clone();
+        let checkpoint_pr_auc = self.baseline_pr_auc;
+        
         let dead_features = self.metabolism.get_dead_features();
         
         if verbose {
+            println!("  - Checkpointing {} trees before metamorphosis", checkpoint_trees.len());
             println!("  - Dead features: {:?}", dead_features);
             println!("  - Buffer: {} samples", self.recent_x.len());
         }
@@ -393,9 +403,46 @@ impl AdversarialLivingBooster {
                 },
                 Err(e) => {
                     if verbose {
-                        println!("  - Warning: {}", e);
+                        println!("  - Error: {}", e);
                     }
+                    // Rollback on error
+                    self.primary.trees = checkpoint_trees;
+                    self.state = SystemState::Normal;
+                    self.consecutive_vulnerable_checks = 0;
+                    return Err(e);
                 }
+            }
+        }
+        
+        // VALIDATION: Test metamorphosis quality on held-out buffer data
+        let validation_size = 2000.min(self.recent_x.len() / 2);
+        if validation_size > 100 {
+            let val_x: Vec<Vec<f64>> = self.recent_x.iter().rev().take(validation_size).cloned().collect();
+            let val_y: Vec<f64> = self.recent_y.iter().rev().take(validation_size).cloned().collect();
+            
+            let post_meta_preds = self.primary.predict_proba(&val_x)?;
+            let post_meta_pr_auc = calculate_pr_auc(&val_y, &post_meta_preds);
+            
+            // ROLLBACK if performance degraded by more than 2%
+            let performance_threshold = 0.98;
+            if post_meta_pr_auc < checkpoint_pr_auc * performance_threshold {
+                if verbose {
+                    println!("  ⚠️  ROLLBACK: Metamorphosis degraded performance");
+                    println!("     Before: {:.4}, After: {:.4}", checkpoint_pr_auc, post_meta_pr_auc);
+                    println!("     Restoring {} trees", checkpoint_trees.len());
+                }
+                self.primary.trees = checkpoint_trees;
+                self.state = SystemState::Normal;
+                self.consecutive_vulnerable_checks = 0;
+                self.adversary.recent_vulnerabilities.clear();
+                return Ok(());
+            }
+            
+            // SUCCESS: Update baseline with new performance
+            self.baseline_pr_auc = post_meta_pr_auc;
+            
+            if verbose {
+                println!("  ✅ Performance maintained: {:.4} → {:.4}", checkpoint_pr_auc, post_meta_pr_auc);
             }
         }
         
@@ -434,30 +481,22 @@ impl AdversarialLivingBooster {
         // get current predictions and convert to log-odds for gradient boosting
         let current_probs = self.primary.predict_proba(&buffer_x)?;
         
-        // Check drift severity
+        // Check drift severity (for logging only)
         let avg_error: f64 = current_probs.iter().zip(buffer_y.iter())
             .map(|(pred, true_y)| (pred - true_y).abs())
             .sum::<f64>() / buffer_y.len() as f64;
         
-        let catastrophic_threshold = 0.35;
-        let use_reset = avg_error > catastrophic_threshold;
-        
         if verbose {
-            println!("    - Drift assessment: avg error = {:.4}, reset = {}", avg_error, use_reset);
+            println!("    - Drift assessment: avg error = {:.4}", avg_error);
         }
         
-        let mut raw_preds: Vec<f64> = if use_reset {
-            // Catastrophic drift - reset to neutral base score
-            vec![0.0; buffer_x.len()]
-        } else {
-            // Normal drift - use current predictions
-            current_probs.iter()
-                .map(|&p| {
-                    let p_clamped = p.clamp(1e-7, 1.0 - 1e-7);
-                    (p_clamped / (1.0 - p_clamped)).ln()  // logit transform
-                })
-                .collect()
-        };
+        // Always use current predictions as base (NEVER reset to zero)
+        let mut raw_preds: Vec<f64> = current_probs.iter()
+            .map(|&p| {
+                let p_clamped = p.clamp(1e-7, 1.0 - 1e-7);
+                (p_clamped / (1.0 - p_clamped)).ln()  // logit transform
+            })
+            .collect();
         
         let histogram_builder = self.primary.histogram_builder.as_ref()
             .ok_or("Histogram builder not initialized")?;
