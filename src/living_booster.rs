@@ -135,7 +135,7 @@ impl AdversarialLivingBooster {
         
         // smaller datasets = be more agressive with adaptation
         let (alert_thresh, meta_thresh) = if n_samples < 50_000 {
-            (2, 3)
+            (1, 2)  // More aggressive for testing
         } else if n_samples < 200_000 {
             (2, 3)
         } else {
@@ -307,24 +307,20 @@ impl AdversarialLivingBooster {
         let (performance_degraded, recent_avg) = if self.recent_pr_aucs.len() >= 3 && self.baseline_pr_auc > 0.0 {
             let avg: f64 = self.recent_pr_aucs.iter().sum::<f64>() / self.recent_pr_aucs.len() as f64;
             let degradation = (self.baseline_pr_auc - avg) / self.baseline_pr_auc;
-            (degradation > 0.15, avg)  // 15% drop
+            (degradation > 0.10, avg)  // 10% drop
         } else {
             (false, 0.0)
         };
         
-        // DON'T trigger if model is performing well (within 5% of baseline)
-        if recent_avg >= self.baseline_pr_auc * 0.95 {
-            self.consecutive_vulnerable_checks = 0;
-            self.state = SystemState::Normal;
-            return;
-        }
+        // Trigger if EITHER vulnerability OR performance degraded
+        let is_vulnerable = vuln_score > self.vulnerability_alert_threshold || performance_degraded;
         
-        // Trigger if BOTH vulnerability AND performance degraded
-        let is_vulnerable = vuln_score > self.vulnerability_alert_threshold && performance_degraded;
+        // Reset to Normal only if performance actually recovered (within 5% of baseline)
+        let performance_recovered = recent_avg >= self.baseline_pr_auc * 0.95;
         
         match self.state {
             SystemState::Normal => {
-                if is_vulnerable {
+                if is_vulnerable && !performance_recovered {
                     self.consecutive_vulnerable_checks += 1;
                     if self.consecutive_vulnerable_checks >= self.alert_trigger_threshold {
                         if verbose { 
@@ -333,7 +329,7 @@ impl AdversarialLivingBooster {
                         }
                         self.state = SystemState::Alert { checks_in_alert: 1 };
                     }
-                } else {
+                } else if performance_recovered {
                     self.consecutive_vulnerable_checks = 0;
                 }
             },
@@ -348,10 +344,14 @@ impl AdversarialLivingBooster {
                     } else {
                         self.state = SystemState::Alert { checks_in_alert: checks_in_alert + 1 };
                     }
-                } else {
-                    if verbose { println!("-- System state returned to NORMAL --"); }
+                } else if performance_recovered {
+                    // Only reset to Normal if performance actually recovered
+                    if verbose { println!("-- System state returned to NORMAL (performance recovered) --"); }
                     self.consecutive_vulnerable_checks = 0;
                     self.state = SystemState::Normal;
+                } else {
+                    // Stay in Alert but don't increment counter
+                    println!("-- Staying in ALERT (performance still degraded) --");
                 }
             },
             SystemState::Metamorphosis => {

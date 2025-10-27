@@ -18,6 +18,8 @@ pub struct AdversarialEnsemble {
     #[allow(dead_code)]  
     vulnerability_threshold: f64,
     pos_class_weight: f64,  // weight for minority class
+    vulnerability_ema: f64,  // exponential moving average
+    ema_alpha: f64,  // smoothing factor (0.1 = slow decay)
 }
 
 impl AdversarialEnsemble {
@@ -34,27 +36,30 @@ impl AdversarialEnsemble {
         Self {
             recent_vulnerabilities: VecDeque::new(),
             model,
-            vulnerability_window: 100,
+            vulnerability_window: 5000,  // Large enough for multiple batches
             vulnerability_threshold: 0.15,
             pos_class_weight,
+            vulnerability_ema: 0.0,
+            ema_alpha: 0.1,  // Slow decay - keeps history
         }
     }
     
     pub fn record_vulnerability(&mut self, vuln: Vulnerability) {
-        // Only record if there's actual error (threshold: 0.3)
-        if vuln.error > 0.3 {
+        // Only record if there's actual error (threshold: 0.2)
+        if vuln.error > 0.2 {
             if self.recent_vulnerabilities.len() >= self.vulnerability_window {
                 self.recent_vulnerabilities.pop_front();
             }
-            self.recent_vulnerabilities.push_back(vuln);
+            self.recent_vulnerabilities.push_back(vuln.clone());
+            
+            // Update EMA: new_ema = alpha * new_value + (1 - alpha) * old_ema
+            self.vulnerability_ema = self.ema_alpha * vuln.confidence + (1.0 - self.ema_alpha) * self.vulnerability_ema;
         }
     }
     
     pub fn get_vulnerability_score(&self) -> f64 {
-        if self.recent_vulnerabilities.is_empty() {
-            return 0.0;
-        }
-        self.recent_vulnerabilities.iter().map(|v| v.confidence).sum::<f64>() / self.recent_vulnerabilities.len() as f64
+        // Use EMA instead of raw average - prevents score from dropping to zero
+        self.vulnerability_ema
     }
 
     // calculate how badly the model screwed up on this sample

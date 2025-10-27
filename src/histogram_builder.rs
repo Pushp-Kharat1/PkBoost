@@ -1,5 +1,8 @@
 use rayon::prelude::*;
 use crate::adaptive_parallel::{adaptive_par_map, ParallelComplexity};
+// SimSIMD dependency added for future SIMD optimizations
+#[allow(unused_imports)]
+use simsimd::SpatialSimilarity;
 #[derive(Debug, Clone)]
 pub struct OptimizedHistogramBuilder {
     pub max_bins: usize,
@@ -157,12 +160,15 @@ let edges = if valid_values.len() <= self.max_bins {
         }
     }
     
+    /// Fast bin finding with optimized search
     fn find_bin_fast(&self, edges: &[f64], value: f64) -> usize {
         if edges.is_empty() { return 0; }
         
+        // Linear search for small arrays (cache-friendly)
         if edges.len() <= 16 {
             edges.iter().position(|&x| x >= value).unwrap_or(edges.len() - 1)
         } else {
+            // Binary search for larger arrays
             let mut left = 0;
             let mut right = edges.len();
             while left < right {

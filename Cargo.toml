@@ -10,6 +10,7 @@ csv = "1.3"
 mimalloc = "0.1"
 num_cpus = "1.16"
 ndarray = { version = "0.16.1", features = ["rayon"] }
+simsimd = "5.9"
 
 [[bin]]
 name = "benchmark"

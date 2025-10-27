@@ -80,7 +80,7 @@ fn evaluate_and_observe_batch(
         phase, observation_count, pr_auc, roc_auc, f1, alb.get_vulnerability_score(), alb.get_state()
     );
 
-    alb.observe_batch(x_batch, y_batch, false)?;
+    alb.observe_batch(x_batch, y_batch, true)?;
     Ok(pr_auc)
 }
 
@@ -210,6 +210,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Creating Adversarial Living Booster...");
     let mut alb = AdversarialLivingBooster::new(&x_train, &y_train);
     
+    println!("\n⚠️  METAMORPHOSIS ENABLED (will trigger on drift detection) ⚠️\n");
+    
     println!("\nInitial training...");
     alb.fit_initial(&x_train, &y_train, Some((&x_val, &y_val)), false)?;
     println!("Initial training complete. Model ready for streaming.");
@@ -223,17 +225,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     total_obs += first_batch.len();
     let baseline_pr = evaluate_and_observe_batch(&mut alb, first_batch, first_labels, total_obs, "Normal", &mut log_file)?;
     
-    println!("\n=== PHASE 2: INTRODUCING SUDDEN CATASTROPHIC DRIFT ===");
+    println!("\n=== PHASE 2: INTRODUCING GRADUAL REALISTIC DRIFT ===");
 
-    let drift_features = vec![5, 10, 15, 20, 25];
+    let drift_features = vec![0, 1, 2, 3, 4];
     
-    println!("Applying sudden covariate shift to {} features (simulating measurement system failure)\n", drift_features.len());
+    println!("Applying gradual covariate shift to {} features (simulating distribution change)\n", drift_features.len());
 
-    // CATASTROPHIC shift: invert feature values and add large offset
+    // Realistic drift: small shift and scale (like sensor calibration drift)
     for row in x_test.iter_mut() {
         for &feat_idx in &drift_features {
             if feat_idx < row.len() {
-                row[feat_idx] = -row[feat_idx] + 10.0;
+                row[feat_idx] = row[feat_idx] * 1.2 + 0.5;  // 20% scale + small shift
             }
         }
     }
