@@ -11,6 +11,8 @@ mimalloc = "0.1"
 num_cpus = "1.16"
 ndarray = { version = "0.16.1", features = ["rayon"] }
 simsimd = "5.9"
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"
 
 [[bin]]
 name = "benchmark"
@@ -35,6 +37,7 @@ path = "src/bin/test_retrain.rs"
 [lib]
 name = "pkboost"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 opt-level = 3

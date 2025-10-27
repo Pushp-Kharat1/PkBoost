@@ -13,6 +13,7 @@ pub mod auto_tuner;
 pub mod metabolism;
 pub mod adversarial;
 pub mod living_booster;
+pub mod python_bindings;
 
 pub use histogram_builder::OptimizedHistogramBuilder;
 pub use loss::OptimizedShannonLoss;
