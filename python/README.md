@@ -8,7 +8,7 @@ Python interface for PKBoost - gradient boosting with adaptive drift detection f
 # From local wheel (development)
 pip install target/wheels/pkboost-0.1.0-cp313-cp313-win_amd64.whl --force-reinstall
 
-# From PyPI (when published)
+# From PyPI 
 pip install pkboost
 ```
 
