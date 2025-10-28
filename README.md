@@ -2,6 +2,12 @@
 
 **Gradient boosting that adjusts to concept drift in imbalanced data.**
 
+[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white&style=for-the-badge)](https://www.rust-lang.org/)
+[![PyPI](https://img.shields.io/pypi/v/pkboost?color=blue&logo=pypi&logoColor=white&style=for-the-badge)](https://pypi.org/project/pkboost/)
+[![Downloads](https://img.shields.io/pypi/dm/pkboost?color=brightgreen&style=for-the-badge)](https://pypi.org/project/pkboost/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+
+
 Built from scratch in Rust, PKBoost manages changing data distributions in fraud detection with a fraud rate of 0.2%. It shows less than 2% degradation under drift. In comparison, XGBoost experiences a 31.8% drop and LightGBM a 42.5% drop. PKBoost outperforms XGBoost by 10-18% on the Standard dataset when no drift is applied. It employs information theory with Shannon entropy and Newton Raphson to identify shifts in rare events and trigger an adaptive "metamorphosis" for real-time recovery.
 
 > **"Most boosting libraries overlook concept drift. PKBoost identifies it and evolves to persist."**
