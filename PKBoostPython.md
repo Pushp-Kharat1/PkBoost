@@ -271,4 +271,4 @@ chmod 600 ~/.kaggle/kaggle.json
 
 ---
 
-For more details, see [BENCHMARKS.md](../BENCHMARKS.md)
+For more details, see [BENCHMARKS.md](../https://github.com/Pushp-Kharat1/PkBoost/blob/main/BENCHMARK.md)
