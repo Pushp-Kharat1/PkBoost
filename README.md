@@ -1,3 +1,4 @@
+<img width="500" height="500" alt="Black Simple Personal Logo" src="https://github.com/user-attachments/assets/4a61d787-da86-49cb-a3b0-2d1321ad1901" />
 # PKBoost 
 
 **Gradient boosting that adjusts to concept drift in imbalanced data.**
