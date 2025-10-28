@@ -1,6 +1,16 @@
-<img width="150" height="150" alt="Black Simple Personal Logo" src="https://github.com/user-attachments/assets/4a61d787-da86-49cb-a3b0-2d1321ad1901" />
+<div align="center">
+  <img width="150" height="150" alt="Black Simple Personal Logo" src="https://github.com/user-attachments/assets/4a61d787-da86-49cb-a3b0-2d1321ad1901" />
+</div>
 
-### PKBoost 
+<div align="center">
+  <h1 style="font-size: 120px; font-weight: 900; margin: 40px 0 20px 0; background: linear-gradient(90deg, #DE4F1F, #FF6B6B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 4px; text-shadow: 0 4px 8px rgba(0,0,0,0.3);">
+    PKBoost
+  </h1>
+  <p style="font-size: 24px; color: #8b949e; margin: 0 0 40px 0;">
+    <strong>An Adaptive Gradient Boosting Library</strong>
+  </p>
+</div>
+
 
 **Gradient boosting that adjusts to concept drift in imbalanced data.**
 
