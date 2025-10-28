@@ -252,4 +252,4 @@ MIT License - Free for commercial use
 ## PkBoost has several meanings:
 1) Performance-based Knowledge Boosting 
 2) Pushp Kharat's booster
-3) Pieceofshit knewit Booster (When it comes time for debugging the thing)
+3) Pain-in-the-ass Kafkaesque Booster (for those moments when debugging feels like a bureaucratic fever dream, google the meaning, GitHub will ban me if i say it here).
