@@ -2,6 +2,11 @@
 
 Utility scripts for data preparation, benchmarking, and analysis.
 
+##Downloading the package 
+```
+pip install pkboost
+```
+
 ## Data Preparation
 
 ### `prepare_data.py` - General-Purpose Pipeline
