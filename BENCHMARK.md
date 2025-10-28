@@ -41,6 +41,8 @@ Complete guide for reproducing all benchmarks from the PKBoost paper, including 
 
 ---
 
+## For Python Quick start please refer to [PKBoostPython.md](PKBoostPython.md)
+
 ## Quick Start (5 minutes)
 
 Use included sample data to verify PKBoost works.
