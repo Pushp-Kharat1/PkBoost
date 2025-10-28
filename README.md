@@ -201,6 +201,9 @@ PKBoost features experimental drift detection that monitors model vulnerabilitie
 
 ---
 
+For more details, see [BENCHMARKS.md](BENCHMARK.md)
+
+
 ## 🎯 When to Use PKBoost
 
 ### ✅ Good fit:
