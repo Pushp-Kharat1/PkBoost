@@ -271,4 +271,4 @@ chmod 600 ~/.kaggle/kaggle.json
 
 ---
 
-For more details, see [BENCHMARKS.md](..blob/main/BENCHMARK.md)
+For more details, see [BENCHMARKS.md](blob/main/BENCHMARK.md)
