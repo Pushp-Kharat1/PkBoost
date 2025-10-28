@@ -248,3 +248,8 @@ MIT License - Free for commercial use
   url = {https://github.com/Pushp-Kharat1/pkboost}
 }
 ```
+
+## PkBoost has several meanings:
+1) Performance-based Knowledge Boosting 
+2) Pushp Kharat's booster
+3) Pieceofshit knewit Booster (When it comes time for debugging the thing)
