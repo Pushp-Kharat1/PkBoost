@@ -33,7 +33,9 @@ Built from scratch in Rust, PKBoost manages changing data distributions in fraud
 
 ## 🚀 Quick Start
 
-To use it in Python Please refer to: [PKBoostPython.md](PKBoostPython.md)
+## To use it in Python Please refer to: [PKBoostPython.md](PKBoostPython.md)
+
+## And For API's: [README.md](python/README.md)
 
 Clone the repository and build:
 
