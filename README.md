@@ -144,7 +144,7 @@ fn load_csv(path: &str) -> Result<(Vec<Vec<f64>>, Vec<f64>), Box<dyn Error>> {
 - **Adaptation Mechanisms:** `AdversarialLivingBooster` monitors vulnerability scores to detect drift and trigger retraining, such as pruning unused features through "metabolism" tracking.
 - **Metrics Built-In:** PR-AUC, ROC-AUC, F1@0.5, and threshold optimization are available out-of-the-box.
 
-- For the complete Mathematical Foundations refer to: [Math.pdf](Math.pdf)
+- For full mathematical derivations, Refer too: [Math.pdf](Math.pdf)
 ---
 
 ## 📊 Benchmarks
