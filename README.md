@@ -17,7 +17,7 @@
 [![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white&style=for-the-badge)](https://www.rust-lang.org/)
 [![PyPI](https://img.shields.io/pypi/v/pkboost?color=blue&logo=pypi&logoColor=white&style=for-the-badge)](https://pypi.org/project/pkboost/)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/pkboost?color=brightgreen&style=for-the-badge)](https://pypi.org/project/pkboost/)
-[![Total [![Total Downloads](https://img.shields.io/badge/dynamic/json?url=https://pepy.tech/api/projects/pkboost&query=total_downloads&label=Total%20Downloads&style=for-the-badge&color=orange)](https://pepy.tech/project/pkboost)
+[![Total] Downloads](https://img.shields.io/badge/dynamic/json?url=https://pepy.tech/api/projects/pkboost&query=total_downloads&label=Total%20Downloads&style=for-the-badge&color=orange)](https://pepy.tech/project/pkboost)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Pushp-Kharat1/PKBoost?style=for-the-badge&logo=github)](https://github.com/Pushp-Kharat1/PKBoost/stargazers)
 
