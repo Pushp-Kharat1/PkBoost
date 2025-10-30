@@ -108,7 +108,7 @@ All models trained on the same data split. No hyperparameter tuning beyond defau
 
 ---
 
-## Key Observations (No Hype, Just Numbers)
+## Key Observations
 
 1. **PKBoost never lost a scenario** — highest PR-AUC in all 16 tests.  
 2. **Average margin**:  
