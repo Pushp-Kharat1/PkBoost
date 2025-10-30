@@ -150,6 +150,6 @@ This is **not a claim of universal superiority** — only a factual report of pe
 - `comprehensive_drift_analysis.png` – Visual summary  
 - `baseline_vs_worstcase.png` – Resilience comparison  
 
-*Script: `drift_comparison_all.py` (attached)*
+*Script: [drift_comparision_all.py](drift_comparision_all.py)
 
 ---
