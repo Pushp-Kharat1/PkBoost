@@ -1,8 +1,26 @@
-# PKBoost v2.0
+<div align="center">
+  <img width="150" height="150" alt="PKBoost Logo" src="https://github.com/user-attachments/assets/4a61d787-da86-49cb-a3b0-2d1321ad1901" />
+</div>
+
+<div align="center">
+  <h1 style="font-size: 120px; font-weight: 900; margin: 40px 0 20px 0; background: linear-gradient(90deg, #DE4F1F, #FF6B6B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 4px; text-shadow: 0 4px 8px rgba(0,0,0,0.3);">
+    PKBoost v2.0
+  </h1>
+  <p style="font-size: 24px; color: #8b949e; margin: 0 0 40px 0;">
+    <strong>An Adaptive Gradient Boosting Library</strong>
+  </p>
+</div>
 
 **Gradient boosting that adjusts to concept drift in imbalanced multi-class data.**
 
-Built from scratch in Rust, PKBoost manages changing data distributions in fraud detection with a fraud rate of 0.2%. It shows less than 2% degradation under drift. In comparison, XGBoost experiences a 31.8% drop and LightGBM a 42.5% drop. PKBoost outperforms XGBoost by 10-18% on the Standard dataset when no drift is applied. It employs information theory with Shannon entropy and Newton Raphson to identify shifts in rare events and trigger an adaptive "metamorphosis" for real-time recovery.
+[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white&style=for-the-badge)](https://www.rust-lang.org/)
+[![PyPI](https://img.shields.io/pypi/v/pkboost?color=blue&logo=pypi&logoColor=white&style=for-the-badge)](https://pypi.org/project/pkboost/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/pkboost?color=brightgreen&style=for-the-badge)](https://pypistats.org/packages/pkboost)
+[![Total Downloads](https://img.shields.io/pepy/dt/pkboost?style=for-the-badge&color=orange&label=Total)](https://pepy.tech/project/pkboost)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/Pushp-Kharat1/PKBoost?style=for-the-badge&logo=github)](https://github.com/Pushp-Kharat1/PKBoost/stargazers)
+
+Built from scratch in Rust, PKBoost (Performance-Based Knowledge Booster) manages changing data distributions in fraud detection with a fraud rate of 0.2%. It shows less than 2% degradation under drift. In comparison, XGBoost experiences a 31.8% drop and LightGBM a 42.5% drop. PKBoost outperforms XGBoost by 10-18% on the Standard dataset when no drift is applied. It employs information theory with Shannon entropy and Newton Raphson to identify shifts in rare events and trigger an adaptive "metamorphosis" for real-time recovery.
 
 > **"Most boosting libraries overlook concept drift. PKBoost identifies it and evolves to persist."**
 
@@ -20,7 +38,22 @@ See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
 
 ---
 
+## 📚 Documentation
+
+- **[Python Package Guide](docs/PYTHON_BINDINGS.md)** - Python API, installation, examples
+- **[Benchmark Reproduction](docs/BENCHMARK_REPRODUCTION.md)** - Complete guide to reproduce all results
+- **[Drift Benchmark Report](docs/DRIFT_BENCHMARK_REPORT.md)** - 16 drift scenarios analysis
+- **[Scripts Guide](docs/SCRIPTS_GUIDE.md)** - Data preparation and utility scripts
+- **[Features List](FEATURES.md)** - All 45 production features
+- **[Changelog v2.0](CHANGELOG_V2.md)** - What's new in version 2.0
+
+---
+
 ## 🚀 Quick Start
+
+## To use it in Python Please refer to: [Python Bindings Guide](docs/PYTHON_BINDINGS.md)
+
+## And For API's: [Python API README](python/README.md)
 
 Clone the repository and build:
 
@@ -162,6 +195,8 @@ println!("Accuracy: {:.2}%", accuracy * 100.0);
 - **Adaptation Mechanisms:** `AdversarialLivingBooster` monitors vulnerability scores to detect drift and trigger retraining, such as pruning unused features through "metabolism" tracking.
 - **Metrics Built-In:** PR-AUC, ROC-AUC, F1@0.5, and threshold optimization are available out-of-the-box.
 
+- For full mathematical derivations, Refer to: [Math.pdf](Math.pdf)
+
 ---
 
 ## 📊 Benchmarks
@@ -260,6 +295,12 @@ PKBoost features experimental drift detection that monitors model vulnerabilitie
 
 ---
 
+### For more details, see [BENCHMARKS.md](BENCHMARK.md)
+
+### For Benchmarks in different drift conditions, refer [DRIFTBENCHMARK.md](DRIFTBENCHMARK.md)
+
+---
+
 ## 🔬 How It Works
 
 **Traditional gradient boosting struggles with extreme imbalance because:**
@@ -324,6 +365,12 @@ PKBoost prioritizes accuracy over speed. For production inference, all three hav
 - Rust 1.70+ (2021 edition)
 - 8GB+ RAM for large datasets (>100K samples)
 - Multi-core CPU recommended (auto-detects and parallelizes)
+
+**Python Package:**
+```bash
+pip install pkboost
+```
+See [Python Bindings Guide](docs/PYTHON_BINDINGS.md) for full API documentation.
 
 ---
 
