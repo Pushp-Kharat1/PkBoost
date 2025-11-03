@@ -1,0 +1,54 @@
+[package]
+name = "pkboost"
+version = "0.1.1"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
+rayon = "1.8"
+csv = "1.3"
+mimalloc = "0.1"
+num_cpus = "1.16"
+ndarray = { version = "0.16.1", features = ["rayon"] }
+simsimd = "5.9"
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"
+log = "0.4"
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "test_living"
+path = "src/bin/test_living.rs"
+
+[[bin]]
+name = "test_drift"
+path = "src/bin/test_drift.rs"
+
+[[bin]]
+name = "test_static"
+path = "src/bin/test_static.rs"
+
+[[bin]]
+name = "test_retrain"
+path = "src/bin/test_retrain.rs"
+
+[[bin]]
+name = "test_regression"
+path = "src/bin/test_regression.rs"
+
+[[bin]]
+name = "test_adaptive_regression"
+path = "src/bin/test_adaptive_regression.rs"
+
+[lib]
+name = "pkboost"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

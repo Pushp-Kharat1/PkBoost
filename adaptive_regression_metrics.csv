@@ -1,0 +1,7 @@
+observation,phase,rmse,mae,r2,vuln_score,state,metamorphosis_count
+1000,normal,0.9895,0.5618,0.3514,0.0000,Normal,0
+2000,normal,0.8285,0.4774,0.4833,1.1124,Normal,0
+2064,normal,0.6991,0.4123,0.6307,1.2662,Normal,0
+3064,drifted,1.6160,1.2737,-0.9940,1.0579,Alert { checks_in_alert: 1 },0
+4064,drifted,0.8780,0.6730,0.4147,1.4621,Normal,1
+4128,drifted,0.9196,0.7007,0.4799,1.0687,Normal,1

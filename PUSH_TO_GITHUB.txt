@@ -1,0 +1,57 @@
+PKBoost v2.0 - GitHub Push Instructions
+========================================
+
+Repository: https://github.com/Pushp-Kharat1/PkBoost
+
+1. Initialize Git (if not already done)
+----------------------------------------
+cd "c:\Users\asus\OneDrive - Value Score Business Solutions LLP\Desktop\PkBoost genesis rust"
+git init
+
+2. Add All Files
+-----------------
+git add .
+
+3. Commit v2.0
+--------------
+git commit -m "PKBoost v2.0: Multi-Class Classification + HAB + Drift Resilience
+
+Major Features:
+- Multi-class classification (OvR + softmax): 92.36% on Dry Bean (7 classes)
+- HAB: 165x faster adaptation with selective retraining
+- 2-17x better drift resilience vs XGBoost/LightGBM
+- 45 production features, zero configuration
+- Real-world validation on Credit Card, Dry Bean, Iris datasets
+
+Performance:
+- Core model: 32-46% faster
+- Macro-F1: Best-in-class on imbalanced data
+- Drift: -0.43% degradation (vs -0.91% XGBoost)
+
+See CHANGELOG_V2.md for full details."
+
+4. Add Remote (if not already added)
+-------------------------------------
+git remote add origin https://github.com/Pushp-Kharat1/PkBoost.git
+
+OR if already exists:
+git remote set-url origin https://github.com/Pushp-Kharat1/PkBoost.git
+
+5. Push to GitHub
+------------------
+git branch -M main
+git push -u origin main --force
+
+6. Create v2.0 Release Tag
+---------------------------
+git tag -a v2.0.0 -m "PKBoost v2.0.0 - Multi-Class + HAB + Drift Resilience"
+git push origin v2.0.0
+
+7. Create GitHub Release
+-------------------------
+Go to: https://github.com/Pushp-Kharat1/PkBoost/releases/new
+- Tag: v2.0.0
+- Title: PKBoost v2.0.0 - Multi-Class Classification + HAB
+- Description: Copy from CHANGELOG_V2.md
+
+Done! Your repository will be updated with v2.0
