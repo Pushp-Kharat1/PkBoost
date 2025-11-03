@@ -1,8 +1,10 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
-use numpy::{PyArray1, PyReadonlyArray2, PyReadonlyArray1};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray2, PyReadonlyArray1};
 use crate::model::OptimizedPKBoostShannon;
 use crate::living_booster::{AdversarialLivingBooster, SystemState};
+use crate::regression::PKBoostRegressor;
+use crate::multiclass::MultiClassPKBoost;
 
 #[pyclass]
 pub struct PKBoostClassifier {
@@ -460,9 +462,280 @@ impl PKBoostAdaptive {
     }
 }
 
+#[pyclass]
+pub struct PKBoostRegressorPy {
+    model: Option<PKBoostRegressor>,
+    fitted: bool,
+}
+
+#[pymethods]
+impl PKBoostRegressorPy {
+    #[new]
+    fn new() -> Self {
+        Self {
+            model: None,
+            fitted: false,
+        }
+    }
+
+    #[staticmethod]
+    fn auto() -> Self {
+        Self {
+            model: None,
+            fitted: false,
+        }
+    }
+
+    #[pyo3(signature = (x, y, x_val=None, y_val=None, verbose=None))]
+    fn fit<'py>(
+        &mut self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+        y: &Bound<'py, PyAny>,
+        x_val: Option<&Bound<'py, PyAny>>,
+        y_val: Option<&Bound<'py, PyAny>>,
+        verbose: Option<bool>,
+    ) -> PyResult<()> {
+        let to_array2 = |arr: &Bound<'py, PyAny>| -> PyResult<PyReadonlyArray2<'py, f64>> {
+            if let Ok(readonly) = arr.extract::<PyReadonlyArray2<f64>>() {
+                Ok(readonly)
+            } else {
+                let np = py.import_bound("numpy")?;
+                let converted = np.call_method1("asarray", (arr,))?;
+                converted.extract::<PyReadonlyArray2<f64>>()
+            }
+        };
+        
+        let to_array1 = |arr: &Bound<'py, PyAny>| -> PyResult<PyReadonlyArray1<'py, f64>> {
+            if let Ok(readonly) = arr.extract::<PyReadonlyArray1<f64>>() {
+                Ok(readonly)
+            } else {
+                let np = py.import_bound("numpy")?;
+                let converted = np.call_method1("asarray", (arr,))?;
+                converted.extract::<PyReadonlyArray1<f64>>()
+            }
+        };
+        
+        let x_array = to_array2(x)?;
+        let y_array = to_array1(y)?;
+        
+        let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
+            .into_iter().map(|row| row.to_vec()).collect();
+        let y_vec: Vec<f64> = y_array.as_array().to_vec();
+        
+        let eval_set = if let (Some(xv), Some(yv)) = (x_val.map(to_array2).transpose()?, y_val.map(to_array1).transpose()?) {
+            let x_val_vec: Vec<Vec<f64>> = xv.as_array().rows()
+                .into_iter().map(|row| row.to_vec()).collect();
+            let y_val_vec: Vec<f64> = yv.as_array().to_vec();
+            Some((x_val_vec, y_val_vec))
+        } else { None };
+
+        let verbose = verbose.unwrap_or(false);
+        
+        py.allow_threads(|| {
+            if self.model.is_none() {
+                let mut auto_model = PKBoostRegressor::auto(&x_vec, &y_vec);
+                auto_model.fit(&x_vec, &y_vec, eval_set.as_ref().map(|(x, y)| (x, y.as_slice())), verbose)?;
+                self.model = Some(auto_model);
+                self.fitted = true;
+                Ok(())
+            } else if let Some(ref mut model) = self.model {
+                model.fit(&x_vec, &y_vec, eval_set.as_ref().map(|(x, y)| (x, y.as_slice())), verbose)?;
+                self.fitted = true;
+                Ok(())
+            } else {
+                Err("Model not initialized".to_string())
+            }
+        }).map_err(|e| PyValueError::new_err(format!("Training failed: {}", e)))?;
+        
+        Ok(())
+    }
+
+    fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err("Model not fitted. Call fit() first."));
+        }
+
+        let x_array: PyReadonlyArray2<f64> = if let Ok(readonly) = x.extract::<PyReadonlyArray2<f64>>() {
+            readonly
+        } else {
+            let np = py.import_bound("numpy")?;
+            let converted = np.call_method1("asarray", (x,))?;
+            converted.extract::<PyReadonlyArray2<f64>>()?
+        };
+
+        let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
+            .into_iter().map(|row| row.to_vec()).collect();
+        
+        let predictions = py.allow_threads(|| {
+            self.model.as_ref()
+                .ok_or("Model not initialized".to_string())
+                .and_then(|m| m.predict(&x_vec))
+        }).map_err(|e| PyValueError::new_err(format!("Prediction failed: {}", e)))?;
+        
+        Ok(PyArray1::from_vec_bound(py, predictions))
+    }
+
+    #[getter]
+    fn is_fitted(&self) -> bool {
+        self.fitted
+    }
+}
+
+#[pyclass]
+pub struct PKBoostMultiClassPy {
+    model: Option<MultiClassPKBoost>,
+    fitted: bool,
+}
+
+#[pymethods]
+impl PKBoostMultiClassPy {
+    #[new]
+    fn new(n_classes: usize) -> Self {
+        Self {
+            model: Some(MultiClassPKBoost::new(n_classes)),
+            fitted: false,
+        }
+    }
+
+    #[pyo3(signature = (x, y, x_val=None, y_val=None, verbose=None))]
+    fn fit<'py>(
+        &mut self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+        y: &Bound<'py, PyAny>,
+        x_val: Option<&Bound<'py, PyAny>>,
+        y_val: Option<&Bound<'py, PyAny>>,
+        verbose: Option<bool>,
+    ) -> PyResult<()> {
+        let to_array2 = |arr: &Bound<'py, PyAny>| -> PyResult<PyReadonlyArray2<'py, f64>> {
+            if let Ok(readonly) = arr.extract::<PyReadonlyArray2<f64>>() {
+                Ok(readonly)
+            } else {
+                let np = py.import_bound("numpy")?;
+                let converted = np.call_method1("asarray", (arr,))?;
+                converted.extract::<PyReadonlyArray2<f64>>()
+            }
+        };
+        
+        let to_array1 = |arr: &Bound<'py, PyAny>| -> PyResult<PyReadonlyArray1<'py, f64>> {
+            if let Ok(readonly) = arr.extract::<PyReadonlyArray1<f64>>() {
+                Ok(readonly)
+            } else {
+                let np = py.import_bound("numpy")?;
+                let converted = np.call_method1("asarray", (arr,))?;
+                converted.extract::<PyReadonlyArray1<f64>>()
+            }
+        };
+        
+        let x_array = to_array2(x)?;
+        let y_array = to_array1(y)?;
+        
+        let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
+            .into_iter().map(|row| row.to_vec()).collect();
+        let y_vec: Vec<f64> = y_array.as_array().to_vec();
+        
+        let eval_set = if let (Some(xv), Some(yv)) = (x_val.map(to_array2).transpose()?, y_val.map(to_array1).transpose()?) {
+            let x_val_vec: Vec<Vec<f64>> = xv.as_array().rows()
+                .into_iter().map(|row| row.to_vec()).collect();
+            let y_val_vec: Vec<f64> = yv.as_array().to_vec();
+            Some((x_val_vec, y_val_vec))
+        } else { None };
+
+        let verbose = verbose.unwrap_or(false);
+        
+        py.allow_threads(|| {
+            if let Some(ref mut model) = self.model {
+                model.fit(&x_vec, &y_vec, eval_set.as_ref().map(|(x, y)| (x, y.as_slice())), verbose)?;
+                self.fitted = true;
+                Ok(())
+            } else {
+                Err("Model not initialized".to_string())
+            }
+        }).map_err(|e| PyValueError::new_err(format!("Training failed: {}", e)))?;
+        
+        Ok(())
+    }
+
+    fn predict_proba<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err("Model not fitted. Call fit() first."));
+        }
+
+        let x_array: PyReadonlyArray2<f64> = if let Ok(readonly) = x.extract::<PyReadonlyArray2<f64>>() {
+            readonly
+        } else {
+            let np = py.import_bound("numpy")?;
+            let converted = np.call_method1("asarray", (x,))?;
+            converted.extract::<PyReadonlyArray2<f64>>()?
+        };
+
+        let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
+            .into_iter().map(|row| row.to_vec()).collect();
+        
+        let predictions = py.allow_threads(|| {
+            self.model.as_ref()
+                .ok_or("Model not initialized".to_string())
+                .and_then(|m| m.predict_proba(&x_vec))
+        }).map_err(|e| PyValueError::new_err(format!("Prediction failed: {}", e)))?;
+        
+        let n_samples = predictions.len();
+        let n_classes = if n_samples > 0 { predictions[0].len() } else { 0 };
+        let flat: Vec<f64> = predictions.into_iter().flatten().collect();
+        
+        Ok(PyArray2::from_vec2_bound(py, &vec![flat; 1].into_iter()
+            .flat_map(|row| row.chunks(n_classes).map(|c| c.to_vec()).collect::<Vec<_>>())
+            .collect::<Vec<_>>())?)
+    }
+
+    fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<usize>>> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err("Model not fitted. Call fit() first."));
+        }
+
+        let x_array: PyReadonlyArray2<f64> = if let Ok(readonly) = x.extract::<PyReadonlyArray2<f64>>() {
+            readonly
+        } else {
+            let np = py.import_bound("numpy")?;
+            let converted = np.call_method1("asarray", (x,))?;
+            converted.extract::<PyReadonlyArray2<f64>>()?
+        };
+
+        let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
+            .into_iter().map(|row| row.to_vec()).collect();
+        
+        let predictions = py.allow_threads(|| {
+            self.model.as_ref()
+                .ok_or("Model not initialized".to_string())
+                .and_then(|m| m.predict(&x_vec))
+        }).map_err(|e| PyValueError::new_err(format!("Prediction failed: {}", e)))?;
+        
+        Ok(PyArray1::from_vec_bound(py, predictions))
+    }
+
+    #[getter]
+    fn is_fitted(&self) -> bool {
+        self.fitted
+    }
+}
+
 #[pymodule]
 fn pkboost(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PKBoostClassifier>()?;
     m.add_class::<PKBoostAdaptive>()?;
+    m.add_class::<PKBoostRegressorPy>()?;
+    m.add_class::<PKBoostMultiClassPy>()?;
     Ok(())
 }
