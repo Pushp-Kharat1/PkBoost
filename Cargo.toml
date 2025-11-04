@@ -14,6 +14,7 @@ simsimd = "5.9"
 pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
 log = "0.4"
+half = { version = "2.4", features = ["std", "num-traits"] }
 
 [[bin]]
 name = "benchmark"
@@ -42,6 +43,18 @@ path = "src/bin/test_regression.rs"
 [[bin]]
 name = "test_adaptive_regression"
 path = "src/bin/test_adaptive_regression.rs"
+
+[[bin]]
+name = "test_precision"
+path = "src/bin/test_precision.rs"
+
+[[bin]]
+name = "benchmark_progressive_precision"
+path = "src/bin/benchmark_progressive_precision.rs"
+
+[[bin]]
+name = "threeway_comparison"
+path = "src/bin/threeway_comparison.rs"
 
 [lib]
 name = "pkboost"

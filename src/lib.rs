@@ -21,6 +21,7 @@ pub mod constants;
 pub mod huber_loss;
 pub mod partitioned_classifier;
 pub mod multiclass;
+pub mod precision;
 
 pub use histogram_builder::OptimizedHistogramBuilder;
 pub use loss::OptimizedShannonLoss;
@@ -39,3 +40,4 @@ pub use constants::*;
 pub use huber_loss::HuberLoss;
 pub use partitioned_classifier::{PartitionedClassifier, PartitionedClassifierBuilder, PartitionConfig, TaskType, PartitionMethod};
 pub use multiclass::MultiClassPKBoost;
+pub use precision::{PrecisionLevel, ProgressivePrecision, AdaptiveCompute, ProgressiveBuffer};

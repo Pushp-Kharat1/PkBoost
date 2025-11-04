@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use ndarray::ArrayView1;
 use crate::metrics::calculate_shannon_entropy;
 use crate::optimized_data::{TransposedData, CachedHistogram};
+use crate::precision::AdaptiveCompute;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -437,17 +438,11 @@ impl PrecomputedSums {
     fn from_histogram(hist: &CachedHistogram) -> Self {
         let (grad, hess, y, count) = hist.as_slices();
 
-        let mut g_total = 0.0;
-        let mut h_total = 0.0;
-        let mut y_total = 0.0;
-        let mut n_total = 0.0;
-        
-        for i in 0..grad.len() {
-            g_total += grad[i];
-            h_total += hess[i];
-            y_total += y[i];
-            n_total += count[i];
-        }
+        // Use progressive precision for gradient/hessian accumulation
+        let g_total = AdaptiveCompute::gradient_accumulate_progressive(grad);
+        let h_total = AdaptiveCompute::gradient_accumulate_progressive(hess);
+        let y_total: f64 = y.iter().sum();
+        let n_total: f64 = count.iter().sum();
         
         let parent_entropy = calculate_shannon_entropy(n_total - y_total, y_total);
         

@@ -117,23 +117,30 @@ impl PartitionedClassifier {
     fn assign_to_partitions(&self, x: &[Vec<f64>]) -> Vec<usize> {
         use simsimd::SpatialSimilarity;
         
+        // Pre-convert centroids to f32 once (avoid repeated allocations)
+        let centroids_f32: Vec<Vec<f32>> = self.centroids.iter()
+            .map(|c| c.iter().map(|&v| v as f32).collect())
+            .collect();
+        
         x.par_iter().map(|sample| {
-            // Convert to f32 for SIMD
             let sample_f32: Vec<f32> = sample.iter().map(|&v| v as f32).collect();
             
-            self.centroids.iter()
-                .enumerate()
-                .map(|(i, centroid)| {
-                    let centroid_f32: Vec<f32> = centroid.iter().map(|&v| v as f32).collect();
-                    // Use SIMD squared Euclidean distance
-                    let dist = f32::sqeuclidean(&sample_f32[..], &centroid_f32[..])
-                        .map(|d| d as f64)
-                        .unwrap_or(f64::INFINITY);
-                    (i, dist)
-                })
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap_or(0)
+            // Use SimSIMD for fast distance computation (already SIMD-optimized)
+            let mut min_idx = 0;
+            let mut min_dist = f64::INFINITY;
+            
+            for (i, centroid_f32) in centroids_f32.iter().enumerate() {
+                let dist = f32::sqeuclidean(&sample_f32[..], &centroid_f32[..])
+                    .map(|d| d as f64)
+                    .unwrap_or(f64::INFINITY);
+                
+                if dist < min_dist {
+                    min_dist = dist;
+                    min_idx = i;
+                }
+            }
+            
+            min_idx
         }).collect()
     }
     

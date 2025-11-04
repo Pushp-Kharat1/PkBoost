@@ -46,3 +46,17 @@ __pycache__/
 # Documentation build
 /docs/_build/
 /site/
+FEATURE_LIST_PROGRESSIVE_PRECISION.md
+.gitignore
+NEXT_STEPS_COMPLETED.md
+.gitignore
+PROGRESSIVE_PRECISION_SUMMARY.md
+PROGRESSIVE_PRECISION_RESULTS.md
+three_way_comparison.csv
+THREEWAY_COMPARISON_RESULTS.md
+docs/PROGRESSIVE_PRECISION.md
+temp/val.csv
+temp/test_drift.csv
+.gitignore
+temp/train.csv
+temp/test.csv
