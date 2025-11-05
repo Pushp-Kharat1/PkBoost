@@ -360,8 +360,8 @@ fn build_hists(
     indices: &[usize],
     params: &TreeParams,
 ) -> Vec<CachedHistogram> {
-    // OPTIMIZATION 3: Only parallelize when beneficial (saves 15-25% for small feature sets)
-    let use_parallel = feature_indices.len() > 20 || indices.len() > 5000;
+    // Deterministic threshold to avoid race conditions
+    let use_parallel = feature_indices.len() >= 20 && indices.len() >= 5000;
     
     if use_parallel {
         feature_indices.par_iter()

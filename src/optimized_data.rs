@@ -60,6 +60,9 @@ impl TransposedData {
         y: &ArrayView1<f64>,
         n_bins: usize,
     ) -> CachedHistogram {
+        if n_bins == 0 {
+            return CachedHistogram::new(vec![], vec![], vec![], vec![]);
+        }
         let mut hist_grad = vec![0.0; n_bins];
         let mut hist_hess = vec![0.0; n_bins];
         let mut hist_y = vec![0.0; n_bins];

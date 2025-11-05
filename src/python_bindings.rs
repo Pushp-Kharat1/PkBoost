@@ -6,6 +6,17 @@ use crate::living_booster::{AdversarialLivingBooster, SystemState};
 use crate::regression::PKBoostRegressor;
 use crate::multiclass::MultiClassPKBoost;
 
+fn ensure_contiguous<'py>(
+    py: Python<'py>,
+    arr: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let np = py.import_bound("numpy")?;
+    let kwargs = pyo3::types::PyDict::new_bound(py);
+    kwargs.set_item("dtype", "float64")?;
+    kwargs.set_item("order", "C")?;
+    np.call_method("ascontiguousarray", (arr,), Some(&kwargs))
+}
+
 #[pyclass]
 pub struct PKBoostClassifier {
     model: Option<OptimizedPKBoostShannon>,
@@ -267,26 +278,14 @@ impl PKBoostAdaptive {
         y_val: Option<&Bound<'py, PyAny>>,
         verbose: Option<bool>,
     ) -> PyResult<()> {
-        // Helper to convert any array-like to PyReadonlyArray2
         let to_array2 = |arr: &Bound<'py, PyAny>| -> PyResult<PyReadonlyArray2<'py, f64>> {
-            if let Ok(readonly) = arr.extract::<PyReadonlyArray2<f64>>() {
-                Ok(readonly)
-            } else {
-                let np = py.import_bound("numpy")?;
-                let converted = np.call_method1("asarray", (arr,))?;
-                converted.extract::<PyReadonlyArray2<f64>>()
-            }
+            let contiguous = ensure_contiguous(py, arr)?;
+            contiguous.extract::<PyReadonlyArray2<f64>>()
         };
         
-        // Helper to convert any array-like to PyReadonlyArray1
         let to_array1 = |arr: &Bound<'py, PyAny>| -> PyResult<PyReadonlyArray1<'py, f64>> {
-            if let Ok(readonly) = arr.extract::<PyReadonlyArray1<f64>>() {
-                Ok(readonly)
-            } else {
-                let np = py.import_bound("numpy")?;
-                let converted = np.call_method1("asarray", (arr,))?;
-                converted.extract::<PyReadonlyArray1<f64>>()
-            }
+            let contiguous = ensure_contiguous(py, arr)?;
+            contiguous.extract::<PyReadonlyArray1<f64>>()
         };
         
         let x_array = to_array2(x)?;
@@ -332,22 +331,11 @@ impl PKBoostAdaptive {
             return Err(PyRuntimeError::new_err("Model not fitted. Call fit_initial() first."));
         }
 
-        // Convert to arrays
-        let x_array: PyReadonlyArray2<f64> = if let Ok(readonly) = x.extract::<PyReadonlyArray2<f64>>() {
-            readonly
-        } else {
-            let np = py.import_bound("numpy")?;
-            let converted = np.call_method1("asarray", (x,))?;
-            converted.extract::<PyReadonlyArray2<f64>>()?
-        };
-
-        let y_array: PyReadonlyArray1<f64> = if let Ok(readonly) = y.extract::<PyReadonlyArray1<f64>>() {
-            readonly
-        } else {
-            let np = py.import_bound("numpy")?;
-            let converted = np.call_method1("asarray", (y,))?;
-            converted.extract::<PyReadonlyArray1<f64>>()?
-        };
+        let x_contiguous = ensure_contiguous(py, x)?;
+        let y_contiguous = ensure_contiguous(py, y)?;
+        
+        let x_array = x_contiguous.extract::<PyReadonlyArray2<f64>>()?;
+        let y_array = y_contiguous.extract::<PyReadonlyArray1<f64>>()?;
 
         let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
             .into_iter().map(|row| row.to_vec()).collect();
@@ -372,14 +360,8 @@ impl PKBoostAdaptive {
             return Err(PyRuntimeError::new_err("Model not fitted. Call fit_initial() first."));
         }
 
-        // Convert to array
-        let x_array: PyReadonlyArray2<f64> = if let Ok(readonly) = x.extract::<PyReadonlyArray2<f64>>() {
-            readonly
-        } else {
-            let np = py.import_bound("numpy")?;
-            let converted = np.call_method1("asarray", (x,))?;
-            converted.extract::<PyReadonlyArray2<f64>>()?
-        };
+        let x_contiguous = ensure_contiguous(py, x)?;
+        let x_array = x_contiguous.extract::<PyReadonlyArray2<f64>>()?;
 
         let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
             .into_iter().map(|row| row.to_vec()).collect();
@@ -404,14 +386,8 @@ impl PKBoostAdaptive {
             return Err(PyRuntimeError::new_err("Model not fitted. Call fit_initial() first."));
         }
 
-        // Convert to array
-        let x_array: PyReadonlyArray2<f64> = if let Ok(readonly) = x.extract::<PyReadonlyArray2<f64>>() {
-            readonly
-        } else {
-            let np = py.import_bound("numpy")?;
-            let converted = np.call_method1("asarray", (x,))?;
-            converted.extract::<PyReadonlyArray2<f64>>()?
-        };
+        let x_contiguous = ensure_contiguous(py, x)?;
+        let x_array = x_contiguous.extract::<PyReadonlyArray2<f64>>()?;
 
         let x_vec: Vec<Vec<f64>> = x_array.as_array().rows()
             .into_iter().map(|row| row.to_vec()).collect();

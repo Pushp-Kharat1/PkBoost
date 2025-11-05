@@ -86,9 +86,9 @@ fn evaluate_batch(
 fn main() -> Result<(), Box<dyn Error>> {
     println!("\n=== STATIC MODEL (CONTROL GROUP) DRIFT SIMULATION ===\n");
     
-    let (x_train, y_train) = load_data("data/train_large.csv")?;
-    let (x_val, y_val) = load_data("data/val_large.csv")?;
-    let (mut x_test, y_test) = load_data("data/test_large.csv")?;
+    let (x_train, y_train) = load_data("data/creditcard_train.csv")?;
+    let (x_val, y_val) = load_data("data/creditcard_val.csv")?;
+    let (mut x_test, y_test) = load_data("data/creditcard_test.csv")?;
     
     println!("Creating and training static PKBoost model...");
     let mut static_model = OptimizedPKBoostShannon::auto(&x_train, &y_train);

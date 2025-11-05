@@ -104,8 +104,8 @@ let edges = if valid_values.len() <= self.max_bins {
             } else {
                 0.10 + ((i - self.max_bins / 4) as f64 / (self.max_bins as f64 / 2.0)) * 0.80
             };
-            let idx = (len_minus_1 as f64 * q).round() as usize;
-            quantiles.push(valid_values[idx.min(len_minus_1)]);
+            let idx = ((len_minus_1 as f64 * q).round() as usize).min(len_minus_1);
+            quantiles.push(valid_values[idx]);
         }
         quantiles.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         quantiles.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);

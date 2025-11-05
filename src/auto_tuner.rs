@@ -15,7 +15,11 @@ impl VulnerabilityCalibration {
     ) -> Self {
         let preds = model.predict_proba(x_val).unwrap_or_default();
         let pos_ratio = y_val.iter().sum::<f64>() / y_val.len() as f64;
-        let pos_class_weight = (1.0 / pos_ratio).min(1000.0);
+        let pos_class_weight = if pos_ratio > 1e-9 {
+            (1.0 / pos_ratio).min(1000.0)
+        } else {
+            1000.0
+        };
         
         let mut vulnerabilities = Vec::new();
         for (&pred, &true_y) in preds.iter().zip(y_val.iter()) {

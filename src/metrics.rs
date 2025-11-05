@@ -1,6 +1,6 @@
 fn lookup_log2_precise(x: f64) -> f64 {
     if x <= 1e-9 { return 0.0; }
-    if x >= 1.0 { return 0.0; }
+    if x >= 1.0 { return x.log2(); }
     
     let ln_x = x.ln();
     ln_x * 1.4426950408889634

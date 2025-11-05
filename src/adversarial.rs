@@ -31,7 +31,11 @@ impl AdversarialEnsemble {
         model.learning_rate = 0.1;
         model.n_estimators = 5; 
         
-        let pos_class_weight = (1.0 / pos_ratio).min(1000.0);
+        let pos_class_weight = if pos_ratio > 1e-9 {
+            (1.0 / pos_ratio).min(1000.0)
+        } else {
+            1000.0
+        };
         
         Self {
             recent_vulnerabilities: VecDeque::new(),

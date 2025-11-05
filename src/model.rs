@@ -413,9 +413,9 @@ impl OptimizedPKBoostShannon {
         eprintln!("  WARNING: Prediction values out of safe range!");
     }
     
-    // NEW: Check for gradient vanishing
     if grad_norm < 0.001 {
-        eprintln!("  WARNING: Gradients nearly zero - model may have converged or died");
+        eprintln!("  WARNING: Gradients nearly zero - stopping early");
+        return Ok(());
     }
 }
 

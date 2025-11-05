@@ -24,7 +24,7 @@ pub mod multiclass;
 pub mod precision;
 
 pub use histogram_builder::OptimizedHistogramBuilder;
-pub use loss::OptimizedShannonLoss;
+pub use loss::{OptimizedShannonLoss, PoissonLoss, MSELoss, LossType};
 pub use tree::{OptimizedTreeShannon, TreeParams, HistSplitResult};
 pub use optimized_data::CachedHistogram;
 pub use model::OptimizedPKBoostShannon;
@@ -34,7 +34,7 @@ pub use metabolism::FeatureMetabolism;
 pub use adversarial::AdversarialEnsemble;
 pub use living_booster::AdversarialLivingBooster;
 pub use auto_params::{DataStats, auto_params, AutoHyperParams};
-pub use regression::{PKBoostRegressor, RegressionLossType, calculate_rmse, calculate_mae, calculate_r2, detect_outliers, calculate_mad};
+pub use regression::{PKBoostRegressor, RegressionLossType, calculate_rmse, calculate_mae, calculate_r2, detect_outliers, calculate_mad, MSELoss as RegressionMSELoss};
 pub use living_regressor::{AdaptiveRegressor, SystemState};
 pub use constants::*;
 pub use huber_loss::HuberLoss;

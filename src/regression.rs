@@ -7,12 +7,14 @@ use crate::{
     tree::{OptimizedTreeShannon, TreeParams},
     optimized_data::TransposedData,
     huber_loss::HuberLoss,
+    loss::PoissonLoss,
 };
 
 #[derive(Debug, Clone, Copy)]
 pub enum RegressionLossType {
     MSE,
     Huber { delta: f64 },
+    Poisson,
 }
 
 #[derive(Debug)]
@@ -137,6 +139,9 @@ impl PKBoostRegressor {
             RegressionLossType::Huber { .. } => {
                 self.huber_loss.as_ref().unwrap().gradient(y_true, y_pred)
             }
+            RegressionLossType::Poisson => {
+                PoissonLoss::gradient_hessian(y_true, y_pred).0
+            }
         }
     }
     
@@ -145,6 +150,9 @@ impl PKBoostRegressor {
             RegressionLossType::MSE => self.loss_fn.hessian(y_true),
             RegressionLossType::Huber { .. } => {
                 self.huber_loss.as_ref().unwrap().hessian(y_true, y_pred)
+            }
+            RegressionLossType::Poisson => {
+                PoissonLoss::gradient_hessian(y_true, y_pred).1
             }
         }
     }
@@ -283,6 +291,11 @@ impl PKBoostRegressor {
                 .for_each(|(i, p)| *p += self.learning_rate * tree.predict_from_transposed(&transposed, i));
         }
         
+        // Apply log-link transformation for Poisson
+        if matches!(self.loss_type, RegressionLossType::Poisson) {
+            preds.par_iter_mut().for_each(|p| *p = p.exp().min(1e15));
+        }
+        
         Ok(preds)
     }
     
@@ -347,6 +360,16 @@ impl PKBoostRegressor {
             }
         }
         usage
+    }
+}
+
+impl PKBoostRegressor {
+    pub fn with_loss(mut self, loss_type: RegressionLossType) -> Self {
+        self.loss_type = loss_type;
+        if let RegressionLossType::Huber { delta } = loss_type {
+            self.huber_loss = Some(HuberLoss::new(delta));
+        }
+        self
     }
 }
 

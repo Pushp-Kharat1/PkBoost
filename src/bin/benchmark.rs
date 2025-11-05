@@ -37,9 +37,9 @@ fn load_data(path: &str) -> Result<(Vec<Vec<f64>>, Vec<f64>), Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Loading datasets...");
-    let (x_train, y_train) = load_data("resources/data/train_large.csv")?;
-    let (x_val, y_val) = load_data("resources/data/val_large.csv")?;
-    let (x_test, y_test) = load_data("resources/data/test_large.csv")?;
+    let (x_train, y_train) = load_data("data/creditcard_train.csv")?;
+    let (x_val, y_val) = load_data("data/creditcard_val.csv")?;
+    let (x_test, y_test) = load_data("data/creditcard_test.csv")?;
     
     println!("Data loaded: {} training samples, {} validation samples, {} test samples.", 
              x_train.len(), x_val.len(), x_test.len());

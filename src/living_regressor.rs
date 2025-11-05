@@ -399,7 +399,7 @@ impl AdaptiveRegressor {
         
         // Dynamic validation size based on buffer
         let val_size = match self.recent_x.len() {
-            0..=4000 => (self.recent_x.len() / 3).max(MIN_VALIDATION_SIZE),
+            0..=4000 => (self.recent_x.len() / 3).max(MIN_VALIDATION_SIZE).min(self.recent_x.len()),
             4001..=15000 => 2000,
             _ => ((self.recent_x.len() as f64 * 0.2) as usize).max(2000),
         };
@@ -613,7 +613,7 @@ impl AdaptiveRegressor {
         }
         
         // Validate on same data
-        if val_size > 100 {
+        if val_size >= 100 {
             let post_preds = self.primary.predict(&val_x)?;
             let post_rmse = calculate_rmse(&val_y, &post_preds);
             
