@@ -18,7 +18,7 @@
 [![PyPI Downloads](https://img.shields.io/pypi/dm/pkboost?color=brightgreen&style=for-the-badge)](https://pypistats.org/packages/pkboost)
 [![Total Downloads](https://img.shields.io/pepy/dt/pkboost?style=for-the-badge&color=orange&label=Total)](https://pepy.tech/project/pkboost)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/Pushp-Kharat1/PKBoost?style=for-the-badge&logo=github)](https://github.com/Pushp-Kharat1/PKBoost/stargazers)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17541137.svg)](https://doi.org/10.5281/zenodo.17541137)
 
 Built from scratch in Rust, PKBoost (Performance-Based Knowledge Booster) manages changing data distributions in fraud detection with a fraud rate of 0.2%. It shows less than 2% degradation under drift. In comparison, XGBoost experiences a 31.8% drop and LightGBM a 42.5% drop. PKBoost outperforms XGBoost by 10-18% on the Standard dataset when no drift is applied. It employs information theory with Shannon entropy and Newton Raphson to identify shifts in rare events and trigger an adaptive "metamorphosis" for real-time recovery.
 
