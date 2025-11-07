@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="150" height="150" alt="PKBoost Logo" src="https://github.com/user-attachments/assets/4a61d787-da86-49cb-a3b0-2d1321ad1901" />
+  <img width="150" height="150" alt="PKBoost Logo" src="https://github.com/user-attachments/assets/fe0a3cdf-88c5-42b4-81cf-9db14312a018"/>
 </div>
 
 <div align="center">
