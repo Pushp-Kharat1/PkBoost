@@ -222,11 +222,12 @@ print("COMPREHENSIVE DRIFT TESTING: 15+ SCENARIOS")
 print("="*80 + "\n")
 
 # Load data
-data_path = Path('data')
+script_dir = Path(__file__).parent.resolve()
+data_path = script_dir
 print("Loading data...")
-X_train, y_train = load_data(data_path / 'creditcard_train.csv')
-X_val, y_val = load_data(data_path / 'creditcard_val.csv')
-X_test, y_test = load_data(data_path / 'creditcard_test.csv')
+X_train, y_train = load_data(data_path / 'data/creditcard_train.csv')
+X_val, y_val = load_data(data_path / 'data/creditcard_val.csv')
+X_test, y_test = load_data(data_path / 'data/creditcard_test.csv')
 print(f"Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}\n")
 
 # Convert to contiguous float64
