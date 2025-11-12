@@ -546,18 +546,28 @@ impl AdversarialLivingBooster {
                 &tree_params
             );
             
-            // get predictions from new tree and update ensemble
+            // ✅ CORRECT: Collect predictions directly with Arc<Mutex>
+            use std::sync::{Arc, Mutex};
+            
             let mut pool = fork_union::spawn(fork_union::count_logical_cores());
-            let tree_preds: std::sync::Arc<Vec<fork_union::SpinMutex<f64>>> = 
-                std::sync::Arc::new((0..buffer_x.len()).map(|_| fork_union::SpinMutex::new(0.0)).collect());
-            let preds_clone = std::sync::Arc::clone(&tree_preds);
+            let results = Arc::new(Mutex::new(Vec::new()));
+            let results_clone = Arc::clone(&results);
             
-            (0..buffer_x.len()).into_par_iter().with_pool(&mut pool).for_each(|i| {
-                *preds_clone[i].lock() = new_tree.predict_from_transposed(&transposed_data, i);
-            });
+            (0..buffer_x.len())
+                .into_par_iter()
+                .with_pool(&mut pool)
+                .for_each(|i| {
+                    let pred = new_tree.predict_from_transposed(&transposed_data, i);
+                    results_clone.lock().unwrap().push((i, pred));
+                });
             
-            let tree_preds: Vec<f64> = std::sync::Arc::try_unwrap(tree_preds).ok().unwrap()
-                .into_iter().map(|m| m.into_inner()).collect();
+            let mut tree_preds_indexed = Arc::try_unwrap(results)
+                .expect("All clones should be dropped")
+                .into_inner()
+                .unwrap();
+            
+            tree_preds_indexed.sort_by_key(|&(idx, _)| idx);
+            let tree_preds: Vec<f64> = tree_preds_indexed.into_iter().map(|(_, pred)| pred).collect();
             
             for (i, &tree_pred) in tree_preds.iter().enumerate() {
                 raw_preds[i] += self.primary.learning_rate * tree_pred;

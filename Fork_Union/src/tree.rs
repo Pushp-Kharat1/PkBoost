@@ -360,12 +360,20 @@ fn build_hists(
     indices: &[usize],
     params: &TreeParams,
 ) -> Vec<CachedHistogram> {
-    // Deterministic threshold to avoid race conditions
-    let use_parallel = feature_indices.len() >= 20 && indices.len() >= 5000;
+    use std::sync::{Arc, Mutex};
     
-    if use_parallel {
-        feature_indices.iter().enumerate().map(|(feat_idx_local, &actual_feat_idx)| {
-            CachedHistogram::build_vectorized(
+    let mut pool = fork_union::spawn(fork_union::count_logical_cores());
+    
+    // ✅ CORRECT: Actually parallel now!
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let results_clone = Arc::clone(&results);
+    
+    feature_indices
+        .into_par_iter()
+        .with_pool(&mut pool)
+        .for_each(|&actual_feat_idx| {
+            let feat_idx_local = feature_indices.iter().position(|&x| x == actual_feat_idx).unwrap();
+            let hist = CachedHistogram::build_vectorized(
                 transposed_data, 
                 y, 
                 grad, 
@@ -373,24 +381,14 @@ fn build_hists(
                 indices,
                 actual_feat_idx, 
                 params.n_bins_per_feature[feat_idx_local]
-            )
-        }).collect()
-    } else {
-        feature_indices.iter()
-            .enumerate()
-            .map(|(feat_idx_local, &actual_feat_idx)| {
-                CachedHistogram::build_vectorized(
-                    transposed_data, 
-                    y, 
-                    grad, 
-                    hess, 
-                    indices,
-                    actual_feat_idx, 
-                    params.n_bins_per_feature[feat_idx_local]
-                )
-            })
-            .collect()
-    }
+            );
+            results_clone.lock().unwrap().push((feat_idx_local, hist));
+        });
+    
+    let mut final_results: Vec<(usize, CachedHistogram)> = results.lock().unwrap().drain(..).collect();
+    
+    final_results.sort_by_key(|&(idx, _)| idx);
+    final_results.into_iter().map(|(_, hist)| hist).collect()
 }
 
 fn subtract_hists(

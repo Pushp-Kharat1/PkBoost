@@ -75,56 +75,73 @@ impl OptimizedHistogramBuilder {
         }
     }
 
+    /// Fit histograms - CORRECTED VERSION
     pub fn fit(&mut self, x: &[Vec<f64>]) -> &mut Self {
         if x.is_empty() { return self; }
         let n_features = x[0].len();
         
+        use std::sync::{Arc, Mutex};
+        
         let mut pool = fork_union::spawn(fork_union::count_logical_cores());
-        let results_vec: Vec<fork_union::SpinMutex<(Vec<f64>, usize, f64)>> = 
-            (0..n_features).map(|_| fork_union::SpinMutex::new((Vec::new(), 0, 0.0))).collect();
         
-        (0..n_features).into_par_iter().with_pool(&mut pool).for_each(|feature_idx| {
-            let mut valid_values: Vec<f64> = x.iter()
-                .map(|row| row[feature_idx])
-                .filter(|&v| !v.is_nan())
-                .collect();
-
-            let median = Self::calculate_median(&mut valid_values);
-            valid_values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-            valid_values.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
-
-let edges = if valid_values.len() <= self.max_bins {
-    valid_values
-} else {
-    let mut quantiles = Vec::with_capacity(self.max_bins + 1);
-    if !valid_values.is_empty() {
-        let len_minus_1 = valid_values.len() - 1;
-        for i in 0..=self.max_bins {
-            let q = if i < self.max_bins / 4 {
-                (i as f64 / (self.max_bins as f64 / 4.0)) * 0.10
-            } else if i > 3 * self.max_bins / 4 {
-                0.90 + ((i - 3 * self.max_bins / 4) as f64 / (self.max_bins as f64 / 4.0)) * 0.10
-            } else {
-                0.10 + ((i - self.max_bins / 4) as f64 / (self.max_bins as f64 / 2.0)) * 0.80
-            };
-            let idx = ((len_minus_1 as f64 * q).round() as usize).min(len_minus_1);
-            quantiles.push(valid_values[idx]);
-        }
-        quantiles.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        quantiles.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
-    }
-    quantiles
-};
-            *results_vec[feature_idx].lock() = (edges.clone(), edges.len(), median);
-        });
+        // ✅ CORRECT: Collect results with Arc<Mutex>
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let results_clone = Arc::clone(&results);
+        let max_bins = self.max_bins;
         
-        let results: Vec<(Vec<f64>, usize, f64)> = results_vec.into_iter().map(|m| m.into_inner()).collect();
+        (0..n_features)
+            .into_par_iter()
+            .with_pool(&mut pool)
+            .for_each(|feature_idx| {
+                let mut valid_values: Vec<f64> = x.iter()
+                    .map(|row| row[feature_idx])
+                    .filter(|&v| !v.is_nan())
+                    .collect();
 
-        for (edges, n_bins, median) in results {
-            self.bin_edges.push(edges);
-            self.n_bins_per_feature.push(n_bins);
+                let median = Self::calculate_median(&mut valid_values);
+                valid_values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+                valid_values.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+
+                let edges = if valid_values.len() <= max_bins {
+                    valid_values
+                } else {
+                    let mut quantiles = Vec::with_capacity(max_bins + 1);
+                    if !valid_values.is_empty() {
+                        let len_minus_1 = valid_values.len() - 1;
+                        for i in 0..=max_bins {
+                            let q = if i < max_bins / 4 {
+                                (i as f64 / (max_bins as f64 / 4.0)) * 0.10
+                            } else if i > 3 * max_bins / 4 {
+                                0.90 + ((i - 3 * max_bins / 4) as f64 / (max_bins as f64 / 4.0)) * 0.10
+                            } else {
+                                0.10 + ((i - max_bins / 4) as f64 / (max_bins as f64 / 2.0)) * 0.80
+                            };
+                            let idx = ((len_minus_1 as f64 * q).round() as usize).min(len_minus_1);
+                            quantiles.push(valid_values[idx]);
+                        }
+                        quantiles.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        quantiles.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+                    }
+                    quantiles
+                };
+                
+                results_clone.lock().unwrap().push((feature_idx, edges, median));
+            });
+        
+        // ✅ CORRECT: Process results sequentially and sort by feature index
+        let mut final_results = match Arc::try_unwrap(results) {
+            Ok(mutex) => mutex.into_inner().unwrap(),
+            Err(arc) => arc.lock().unwrap().clone(),
+        };
+        
+        final_results.sort_by_key(|&(idx, _, _)| idx);
+        
+        for (_, edges, median) in final_results {
+            self.bin_edges.push(edges.clone());
+            self.n_bins_per_feature.push(edges.len());
             self.medians.push(median);
         }
+        
         self
     }
 

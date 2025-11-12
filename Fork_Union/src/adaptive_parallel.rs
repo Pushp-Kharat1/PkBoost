@@ -95,6 +95,10 @@ pub fn get_parallel_config() -> &'static AdaptiveParallelConfig {
     PARALLEL_CONFIG.get_or_init(|| AdaptiveParallelConfig::detect_hardware())
 }
 
+// At the top of adaptive_parallel.rs, around line 100-150
+// Replace the ENTIRE adaptive_par_map function with this:
+
+/// Adaptive parallel map - CORRECTED VERSION
 pub fn adaptive_par_map<T, F, R>(
     slice: &[T], 
     complexity: ParallelComplexity,
@@ -103,15 +107,28 @@ pub fn adaptive_par_map<T, F, R>(
 where 
     F: Fn(&T) -> R + Sync + Send, 
     T: Sync, 
-    R: Send 
+    R: Send + std::fmt::Debug
 {
     let config = get_parallel_config();
     
     if config.should_parallelize(complexity, slice.len()) {
-        let chunk_size = config.get_chunk_size(slice.len(), complexity);
-        slice.chunks(chunk_size).flat_map(|chunk| {
-            chunk.iter().map(&f).collect::<Vec<_>>()
-        }).collect()
+        let mut pool = fork_union::spawn(config.num_threads);
+        
+        // Pre-allocate vector with correct size
+        let results: Vec<fork_union::SpinMutex<Option<R>>> = 
+            (0..slice.len()).map(|_| fork_union::SpinMutex::new(None)).collect();
+        
+        (0..slice.len())
+            .into_par_iter()
+            .with_pool(&mut pool)
+            .for_each(|i| {
+                *results[i].lock() = Some(f(&slice[i]));
+            });
+        
+        // Extract results (no Arc needed!)
+        results.into_iter()
+            .map(|m| m.into_inner().unwrap())
+            .collect()
     } else {
         slice.iter().map(f).collect()
     }
