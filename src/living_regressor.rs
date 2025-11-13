@@ -699,6 +699,7 @@ impl AdaptiveRegressor {
             gamma: self.primary.gamma * 2.0,
             mi_weight: 0.3,
             n_bins_per_feature: feature_indices.iter().map(|&i| hb.n_bins_per_feature[i]).collect(),
+            feature_elimination_threshold: 0.01,
         };
         
         let adaptive_lr = (self.primary.learning_rate * lr_multiplier).min(0.05);  // Cap LR

@@ -23,6 +23,7 @@ pub mod partitioned_classifier;
 pub mod multiclass;
 pub mod precision;
 
+
 pub use histogram_builder::OptimizedHistogramBuilder;
 pub use loss::{OptimizedShannonLoss, PoissonLoss, MSELoss, LossType};
 pub use tree::{OptimizedTreeShannon, TreeParams, HistSplitResult};
@@ -41,3 +42,11 @@ pub use huber_loss::HuberLoss;
 pub use partitioned_classifier::{PartitionedClassifier, PartitionedClassifierBuilder, PartitionConfig, TaskType, PartitionMethod};
 pub use multiclass::MultiClassPKBoost;
 pub use precision::{PrecisionLevel, ProgressivePrecision, AdaptiveCompute, ProgressiveBuffer};
+
+
+
+//What does PKBoost means?
+// PKBoost has three main fullforms, which i shift depending on -
+//1) Performance-Based Knowledge Booster :- When the model is performing good with no errors and bugs
+//2) Pushp_kharat's Booster :- Cause why not, i built this 
+//3) Pieceofshit Knavish (Scheming; unprincipled; dishonorable.) Booster :- when the fucking thing doesnt works, and i have to sit hours to debug the bloody thing 

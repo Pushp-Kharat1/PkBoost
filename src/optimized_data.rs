@@ -1,4 +1,6 @@
-use ndarray::{Array2, ArrayView1};
+use simsimd::SpatialSimilarity;  // For f64-specific kernels (cosine, dot, etc.)
+use ndarray::{Array1, Array2, ArrayView1};
+
 #[derive(Debug, Clone)]
 pub struct TransposedData {
     pub features: Array2<i32>,
@@ -63,61 +65,18 @@ impl TransposedData {
         if n_bins == 0 {
             return CachedHistogram::new(vec![], vec![], vec![], vec![]);
         }
+        
         let mut hist_grad = vec![0.0; n_bins];
         let mut hist_hess = vec![0.0; n_bins];
         let mut hist_y = vec![0.0; n_bins];
         let mut hist_count = vec![0.0; n_bins];
 
         let feature_values = self.get_feature_values(feature_idx);
-
-        // OPTIMIZATION: Unroll loop for better performance (30-40% faster)
-        let mut i = 0;
         let len = indices.len();
         
-        // Process 4 samples at a time
-        while i + 3 < len {
-            let idx0 = indices[i];
-            let idx1 = indices[i + 1];
-            let idx2 = indices[i + 2];
-            let idx3 = indices[i + 3];
-            
-            if idx0 < self.n_samples && idx1 < self.n_samples && 
-               idx2 < self.n_samples && idx3 < self.n_samples {
-                let bin0 = feature_values[idx0] as usize;
-                let bin1 = feature_values[idx1] as usize;
-                let bin2 = feature_values[idx2] as usize;
-                let bin3 = feature_values[idx3] as usize;
-                
-                if bin0 < n_bins {
-                    hist_grad[bin0] += grad[idx0];
-                    hist_hess[bin0] += hess[idx0];
-                    hist_y[bin0] += y[idx0];
-                    hist_count[bin0] += 1.0;
-                }
-                if bin1 < n_bins {
-                    hist_grad[bin1] += grad[idx1];
-                    hist_hess[bin1] += hess[idx1];
-                    hist_y[bin1] += y[idx1];
-                    hist_count[bin1] += 1.0;
-                }
-                if bin2 < n_bins {
-                    hist_grad[bin2] += grad[idx2];
-                    hist_hess[bin2] += hess[idx2];
-                    hist_y[bin2] += y[idx2];
-                    hist_count[bin2] += 1.0;
-                }
-                if bin3 < n_bins {
-                    hist_grad[bin3] += grad[idx3];
-                    hist_hess[bin3] += hess[idx3];
-                    hist_y[bin3] += y[idx3];
-                    hist_count[bin3] += 1.0;
-                }
-            }
-            i += 4;
-        }
-        
-        // Handle remaining samples
-        while i < len {
+        // Scalar processing (optimal for irregular scatters; SimSIMD doesn't accelerate this directly)
+        // For contiguous bins, uncomment the sorted variant below and sort indices by bin first
+        for i in 0..len {
             let idx = indices[i];
             if idx < self.n_samples {
                 let bin = feature_values[idx] as usize;
@@ -128,10 +87,72 @@ impl TransposedData {
                     hist_count[bin] += 1.0;
                 }
             }
-            i += 1;
         }
 
+        // OPTIONAL: Variant for contiguous adds (requires pre-sorting indices by bin)
+        // Assume indices are sorted by bin for demonstration; use radix sort for O(n) if bins < 256
+        // This uses ndarray sums for grouped chunks (fast, but no SimSIMD here as it lacks simple reductions)
+        /*
+        use ndarray::Array1;
+        let mut sorted_indices = indices.to_vec();
+        sorted_indices.sort_by_key(|&i| feature_values[i] as usize);  // O(n log n); use radix for better
+        let mut bin_start = 0;
+        while bin_start < len {
+            let bin = feature_values[sorted_indices[bin_start]] as usize;
+            if bin >= n_bins {
+                bin_start += 1;
+                continue;
+            }
+            let bin_end = (bin_start + 1..len).position(|j| feature_values[sorted_indices[j]] as usize != bin)
+                .map_or(len, |k| bin_start + k);
+            let chunk_size = bin_end - bin_start;
+            if chunk_size >= 4 {  // Threshold for vectorization worth
+                // Extract sub-arrays for grad/hess/y in this bin
+                let grad_sub: Array1<f64> = Array1::from_iter((bin_start..bin_end).map(|k| {
+                    let idx = sorted_indices[k];
+                    grad[idx]
+                }));
+                let hess_sub: Array1<f64> = Array1::from_iter((bin_start..bin_end).map(|k| {
+                    let idx = sorted_indices[k];
+                    hess[idx]
+                }));
+                let y_sub: Array1<f64> = Array1::from_iter((bin_start..bin_end).map(|k| {
+                    let idx = sorted_indices[k];
+                    y[idx]
+                }));
+                // Use ndarray sum for fast reduction (SIMD-accelerated internally)
+                hist_grad[bin] += grad_sub.sum();
+                hist_hess[bin] += hess_sub.sum();
+                hist_y[bin] += y_sub.sum();
+                hist_count[bin] += chunk_size as f64;
+            } else {
+                // Scalar fallback for small chunks
+                for k in bin_start..bin_end {
+                    let idx = sorted_indices[k];
+                    hist_grad[bin] += grad[idx];
+                    hist_hess[bin] += hess[idx];
+                    hist_y[bin] += y[idx];
+                    hist_count[bin] += 1.0;
+                }
+            }
+            bin_start = bin_end;
+        }
+        */
+
         CachedHistogram::new(hist_grad, hist_hess, hist_y, hist_count)
+    }
+
+    // Example: Using SimSIMD to its fullest for histogram similarity (e.g., compare grad/hess across features)
+    // Dispatches to widest SIMD (AVX-512/NEON) for cosine; great for feature selection or adversarial checks
+    pub fn compare_histograms_cosine(&self, hist1: &CachedHistogram, hist2: &CachedHistogram) -> Result<f64, &'static str> {
+        if hist1.grad.len() != hist2.grad.len() {
+            return Err("Histograms must have equal bins");
+        }
+        let grad1 = hist1.grad.as_slice().unwrap();
+        let grad2 = hist2.grad.as_slice().unwrap();
+        // Fullest extent: Cosine distance via SimSIMD (auto-dispatches to hardware SIMD); convert to similarity
+        let cos_dist = f64::cosine(grad1, grad2).ok_or("Cosine computation failed")?;
+        Ok(1.0 - cos_dist)
     }
 }
 
@@ -142,8 +163,6 @@ pub struct CachedHistogram {
     pub y: Array1<f64>,
     pub count: Array1<f64>,
 }
-
-use ndarray::Array1;
 
 impl CachedHistogram {
     pub fn new(grad: Vec<f64>, hess: Vec<f64>, y: Vec<f64>, count: Vec<f64>) -> Self {

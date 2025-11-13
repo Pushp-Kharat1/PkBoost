@@ -209,7 +209,8 @@ impl PKBoostRegressor {
                 reg_lambda: self.reg_lambda,
                 gamma: self.gamma,
                 mi_weight: 0.3,  // Use variance reduction for regression
-                n_bins_per_feature: feature_indices.iter().map(|&i| hb.n_bins_per_feature[i]).collect()
+                n_bins_per_feature: feature_indices.iter().map(|&i| hb.n_bins_per_feature[i]).collect(),
+                feature_elimination_threshold: 0.01,
             };
             
             tree.fit_optimized(&transposed, y, &grad, &hess, &sample_indices, &feature_indices, &params);

@@ -518,6 +518,7 @@ impl AdversarialLivingBooster {
             n_bins_per_feature: feature_indices.iter()
                 .map(|&i| histogram_builder.n_bins_per_feature[i])
                 .collect(),
+            feature_elimination_threshold: 0.01,
         };
         
         let mut trees_added = 0;

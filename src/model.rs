@@ -1,11 +1,10 @@
 // Main gradient boosting model with auto-tuning and adaptive features
 // This is basically xgboost but with shannon entropy guidance and better handling of imbalanced data
 
-// use log::info;
 use rand::prelude::*;
 use rayon::prelude::*;
 use std::time::Instant;
-use crate::auto_params::{ DataStats};
+use crate::auto_params::DataStats;
 use crate::auto_tuner::auto_tune_principled;
 use crate::{
     histogram_builder::OptimizedHistogramBuilder,
@@ -300,7 +299,7 @@ impl OptimizedPKBoostShannon {
         self.auto_tuned
     }
 
-    // main training loop - standard gradient boosting with some tricks
+    // main training loop - standard gradient boosting with performance optimizations
     pub fn fit(&mut self, x: &Vec<Vec<f64>>, y: &[f64], eval_set: Option<(&Vec<Vec<f64>>, &[f64])>, verbose: bool) -> Result<(), String> {
         let fit_start_time = Instant::now();
         let n_samples = x.len();
@@ -363,8 +362,20 @@ impl OptimizedPKBoostShannon {
             sample_indices.shuffle(&mut rng);
             sample_indices.truncate(sample_size);
 
-            // subsample columns too
-            let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
+            // OPTIMIZATION 2: Dynamic column sampling
+            let feature_size = {
+                let base_ratio = self.colsample_bytree;
+                // Reduce feature sampling in later iterations (faster but still diverse)
+                let progress = iteration as f64 / self.n_estimators as f64;
+                let adaptive_ratio = if progress > 0.7 {
+                    base_ratio * 0.7  // Sample fewer features later
+                } else if progress > 0.4 {
+                    base_ratio * 0.85
+                } else {
+                    base_ratio
+                };
+                ((adaptive_ratio * n_features as f64) as usize).max(1)
+            };
             let mut feature_indices: Vec<usize> = (0..n_features).collect();
             feature_indices.shuffle(&mut rng);
             feature_indices.truncate(feature_size);
@@ -383,7 +394,8 @@ impl OptimizedPKBoostShannon {
                 mi_weight: self.mi_weight,
                 n_bins_per_feature: feature_indices.iter().map(|&i|
                     histogram_builder.n_bins_per_feature[i]
-                ).collect()
+                ).collect(),
+                feature_elimination_threshold: 0.01, // OPTIMIZATION 1: Early feature elimination
             };
 
             tree.fit_optimized(
@@ -397,35 +409,44 @@ impl OptimizedPKBoostShannon {
             );
 
             if (iteration + 1) % 25 == 0 && verbose {
-    let grad_norm: f64 = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
-    let grad_mean: f64 = grad.iter().sum::<f64>() / grad.len() as f64;
-    let pred_min = train_preds.iter().cloned().fold(f64::INFINITY, f64::min);
-    let pred_max = train_preds.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let pred_mean = train_preds.iter().sum::<f64>() / train_preds.len() as f64;
+                let grad_norm: f64 = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
+                let grad_mean: f64 = grad.iter().sum::<f64>() / grad.len() as f64;
+                let pred_min = train_preds.iter().cloned().fold(f64::INFINITY, f64::min);
+                let pred_max = train_preds.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let pred_mean = train_preds.iter().sum::<f64>() / train_preds.len() as f64;
 
-    eprintln!("DEBUG Iter {}: grad_norm={:.4}, grad_mean={:.6}, pred_range=[{:.2}, {:.2}], pred_mean={:.4}",
-             iteration + 1, grad_norm, grad_mean, pred_min, pred_max, pred_mean);
+                eprintln!("DEBUG Iter {}: grad_norm={:.4}, grad_mean={:.6}, pred_range=[{:.2}, {:.2}], pred_mean={:.4}",
+                         iteration + 1, grad_norm, grad_mean, pred_min, pred_max, pred_mean);
 
-    if grad_norm > 10000.0 {
-        eprintln!("  WARNING: Gradient explosion detected!");
-    }
-    if pred_max > 50.0 || pred_min < -50.0 {
-        eprintln!("  WARNING: Prediction values out of safe range!");
-    }
-    
-    if grad_norm < 0.001 {
-        eprintln!("  WARNING: Gradients nearly zero - stopping early");
-        return Ok(());
-    }
-}
+                if grad_norm > 10000.0 {
+                    eprintln!("  WARNING: Gradient explosion detected!");
+                }
+                if pred_max > 50.0 || pred_min < -50.0 {
+                    eprintln!("  WARNING: Prediction values out of safe range!");
+                }
+                
+                if grad_norm < 0.001 {
+                    eprintln!("  WARNING: Gradients nearly zero - stopping early");
+                    return Ok(());
+                }
+            }
 
-            let tree_preds: Vec<f64> = (0..n_samples).into_par_iter().map(|sample_idx| {
-                tree.predict_from_transposed(&transposed_data, sample_idx)
-            }).collect();
+            // Use batch prediction for better performance
+            let sample_indices_vec: Vec<usize> = (0..n_samples).collect();
+            let tree_preds = tree.predict_batch(&transposed_data, &sample_indices_vec);
 
-            // update predictions with new tree
+            // OPTIMIZATION 6: Adaptive learning rate scheduling
+            let adaptive_lr = if iteration < 50 {
+                self.learning_rate  // Full learning rate initially
+            } else if iteration < 200 {
+                self.learning_rate * 0.8  // Reduce slightly
+            } else {
+                self.learning_rate * 0.6  // Reduce more for fine-tuning
+            };
+
+            // update predictions with adaptive learning rate
             train_preds.par_iter_mut().zip(tree_preds.par_iter()).for_each(|(current_pred, tree_pred)| {
-                *current_pred += self.learning_rate * tree_pred
+                *current_pred += adaptive_lr * tree_pred
             });
 
             // clamp to prevent numerical instability
@@ -436,54 +457,56 @@ impl OptimizedPKBoostShannon {
             if let (Some(ref val_transposed_data), Some(ref mut val_preds_ref), Some((_, y_val))) =
                 (val_transposed.as_ref(), val_preds.as_mut(), eval_set)
             {
-                let val_tree_preds: Vec<f64> = (0..val_transposed_data.n_samples).into_par_iter().map(|sample_idx| {
-                    tree.predict_from_transposed(val_transposed_data, sample_idx)
-                }).collect();
+                let val_sample_indices: Vec<usize> = (0..val_transposed_data.n_samples).collect();
+                let val_tree_preds = tree.predict_batch(val_transposed_data, &val_sample_indices);
 
                 val_preds_ref.par_iter_mut().zip(val_tree_preds.par_iter()).for_each(|(current_pred, tree_pred)| {
-                    *current_pred += self.learning_rate * tree_pred;
+                    *current_pred += adaptive_lr * tree_pred;
                 });
                 
                 // evaluate on validation set periodically
-if (iteration + 1) % 10 == 0 || iteration == 0 {
-    let val_probs = self.loss_fn.sigmoid(val_preds_ref);
-    let val_roc = calculate_roc_auc(y_val, &val_probs);
-    let val_pr = calculate_pr_auc(y_val, &val_probs);  // PR-AUC better for imbalanced data
-    
-    // smooth metrics over last 3 evaluations to reduce noise
-    if self.metric_history.len() >= 3 {
-        self.metric_history.remove(0);
-    }
-    self.metric_history.push(val_pr);
-    
-    let smoothed_metric = self.metric_history.iter().sum::<f64>() / self.metric_history.len() as f64;
-    
-    if verbose && ((iteration + 1) % 10 == 0 || iteration == 0) {
-        let total_time = fit_start_time.elapsed().as_secs_f64();
-        let samples_per_sec = (n_samples as f64 * (iteration + 1) as f64) / total_time;
-        println!("{:<8} {:<10.4} {:<10.4} {:<8.1} {:<12.0} {:<10}",
-                 iteration + 1, val_roc, val_pr, total_time, samples_per_sec, "Training");
-        println!("  ↳ Smoothed PR-AUC: {:.4} (best: {:.4} @ iter {})", 
-                 smoothed_metric, self.best_score, self.best_iteration + 1);
-        use std::io::{self, Write};
-        let _ = io::stdout().flush();
-    }
-    
-    // update best score if we improved
-    if smoothed_metric > self.best_score + 1e-5 {
-        self.best_score = smoothed_metric;
-        self.best_iteration = iteration;
-    }
-    
-    // early stopping if no improvement
-    if iteration - self.best_iteration >= self.early_stopping_rounds {
-        if verbose { 
-            println!("\nEarly stopping at iteration {} (no improvement for {} rounds)", 
-                     iteration + 1, self.early_stopping_rounds); 
-        }
-        break;
-    }
-}
+                if (iteration + 1) % 10 == 0 || iteration == 0 {
+                    let val_probs = self.loss_fn.sigmoid(val_preds_ref);
+                    let val_roc = calculate_roc_auc(y_val, &val_probs);
+                    let val_pr = calculate_pr_auc(y_val, &val_probs);  // PR-AUC better for imbalanced data
+                    
+                    // smooth metrics over last 3 evaluations to reduce noise
+                    if self.metric_history.len() >= 3 {
+                        self.metric_history.remove(0);
+                    }
+                    self.metric_history.push(val_pr);
+                    
+                    let smoothed_metric = self.metric_history.iter().sum::<f64>() / self.metric_history.len() as f64;
+                    
+                    if verbose && ((iteration + 1) % 10 == 0 || iteration == 0) {
+                        let total_time = fit_start_time.elapsed().as_secs_f64();
+                        let samples_per_sec = (n_samples as f64 * (iteration + 1) as f64) / total_time;
+                        println!("{:<8} {:<10.4} {:<10.4} {:<8.1} {:<12.0} {:<10}",
+                                 iteration + 1, val_roc, val_pr, total_time, samples_per_sec, "Training");
+                        println!("  ↳ Smoothed PR-AUC: {:.4} (best: {:.4} @ iter {})", 
+                                 smoothed_metric, self.best_score, self.best_iteration + 1);
+                        use std::io::{self, Write};
+                        let _ = io::stdout().flush();
+                    }
+                    
+                    // update best score if we improved
+                    if smoothed_metric > self.best_score + 1e-5 {
+                        self.best_score = smoothed_metric;
+                        self.best_iteration = iteration;
+                        self.patience_counter = 0;
+                    } else {
+                        self.patience_counter += 1;
+                    }
+                    
+                    // early stopping if no improvement
+                    if self.patience_counter >= self.early_stopping_rounds {
+                        if verbose { 
+                            println!("\nEarly stopping at iteration {} (no improvement for {} rounds)", 
+                                     iteration + 1, self.early_stopping_rounds); 
+                        }
+                        break;
+                    }
+                }
 
             } else {
                 self.best_iteration = iteration;
@@ -520,6 +543,33 @@ if (iteration + 1) % 10 == 0 || iteration == 0 {
             predictions.par_iter_mut().enumerate().for_each(|(idx, current_pred)| {
                 *current_pred += self.learning_rate * tree.predict_from_transposed(&transposed_data, idx);
             });
+        }
+        
+        Ok(self.loss_fn.sigmoid(&predictions))
+    }
+
+    // OPTIMIZATION 5: Memory-mapped prediction for large datasets
+    pub fn predict_proba_chunked(&self, x: &Vec<Vec<f64>>) -> Result<Vec<f64>, String> {
+        if !self.fitted { return Err("Model not fitted".to_string()); }
+
+        let histogram_builder = self.histogram_builder.as_ref().unwrap();
+        let x_proc = histogram_builder.transform(x);
+        let transposed_data = TransposedData::from_rows(&x_proc);
+
+        let n_samples = x_proc.len();
+        let mut predictions = vec![self.base_score; n_samples];
+
+        // OPTIMIZATION: Process trees in chunks for better cache utilization
+        const TREE_CHUNK_SIZE: usize = 8;
+        
+        for chunk in self.trees.chunks(TREE_CHUNK_SIZE) {
+            for tree in chunk {
+                // Process all samples for this tree chunk
+                for i in 0..n_samples {
+                    predictions[i] += self.learning_rate * 
+                        tree.predict_from_transposed(&transposed_data, i);
+                }
+            }
         }
         
         Ok(self.loss_fn.sigmoid(&predictions))

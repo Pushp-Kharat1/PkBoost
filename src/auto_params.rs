@@ -1,4 +1,5 @@
 use crate::tree::TreeParams;
+
 pub struct DataStats {
     pub n_rows: usize,
     pub n_cols: usize,
@@ -54,6 +55,7 @@ pub fn auto_params(stats: &DataStats) -> AutoHyperParams {
             gamma,
             mi_weight,
             n_bins_per_feature: vec![32; stats.n_cols],
+            feature_elimination_threshold: 0.01, // ADD THIS LINE
         },
         n_estimators,
         learning_rate,
