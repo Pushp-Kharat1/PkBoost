@@ -15,7 +15,6 @@
 
 [![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white&style=for-the-badge)](https://www.rust-lang.org/)
 [![PyPI](https://img.shields.io/pypi/v/pkboost?color=blue&logo=pypi&logoColor=white&style=for-the-badge)](https://pypi.org/project/pkboost/)
-[![PyPI Downloads](https://img.shields.io/pypi/dm/pkboost?color=brightgreen&style=for-the-badge)](https://pypistats.org/packages/pkboost)
 [![Total Downloads](https://img.shields.io/pepy/dt/pkboost?style=for-the-badge&color=orange&label=Total)](https://pepy.tech/project/pkboost)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17541137.svg)](https://doi.org/10.5281/zenodo.17541137)
