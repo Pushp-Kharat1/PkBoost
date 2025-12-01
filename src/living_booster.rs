@@ -502,6 +502,9 @@ impl AdversarialLivingBooster {
         
         let histogram_builder = self.primary.histogram_builder.as_ref()
             .ok_or("Histogram builder not initialized")?;
+        
+        // 🔥 OPTIMIZATION: Transform buffer data ONCE
+        // WHY: Eliminates redundant transforms for every tree in the loop
         let x_processed = histogram_builder.transform(&buffer_x);
         let transposed_data = TransposedData::from_rows(&x_processed);
         

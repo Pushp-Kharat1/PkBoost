@@ -101,8 +101,8 @@ pub fn find_best_split_regression(
         
         if combined_gain > best_split.best_gain {
             best_split.best_gain = combined_gain;
-            best_split.best_bin_idx = i as i32;
-        }
+            best_split.best_bin_idx = i as i16;    
+         }
     }
     
     best_split

@@ -1,20 +1,11 @@
-fn lookup_log2_precise(x: f64) -> f64 {
-    if x <= 1e-9 { return 0.0; }
-    if x >= 1.0 { return x.log2(); }
-    
-    let ln_x = x.ln();
-    ln_x * 1.4426950408889634
-}
-
+#[inline(always)]
 pub fn calculate_shannon_entropy(count0: f64, count1: f64) -> f64 {
     let total = count0 + count1;
     if total < 1e-9 { return 0.0; }
-    let p0 = count0 / total;
     let p1 = count1 / total;
     
-    let entropy = if p0 > 1e-9 { -p0 * lookup_log2_precise(p0) } else { 0.0 } +
-                  if p1 > 1e-9 { -p1 * lookup_log2_precise(p1) } else { 0.0 };
-    entropy
+    // Use fast lookup table for binary entropy
+    fast_binary_entropy_from_ratio(p1)
 }
 
 use std::sync::LazyLock;

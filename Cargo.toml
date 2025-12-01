@@ -10,7 +10,7 @@ csv = "1.3"
 mimalloc = "0.1"
 num_cpus = "1.16"
 ndarray = { version = "0.16.1", features = ["rayon"] }
-simsimd = "5.9.1"
+simsimd = "6.5.5"
 pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
 log = "0.4"

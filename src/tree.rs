@@ -5,7 +5,6 @@ use rayon::prelude::*;
 use ndarray::ArrayView1;
 use crate::metrics::calculate_shannon_entropy;
 use crate::optimized_data::{TransposedData, CachedHistogram};
-use crate::precision::AdaptiveCompute;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::cell::RefCell;
@@ -13,7 +12,7 @@ use std::cell::RefCell;
 #[derive(Debug, Clone, Copy)]
 pub struct HistSplitResult {
     pub best_gain: f64,
-    pub best_bin_idx: i32,
+    pub best_bin_idx: i16,
 }
 
 impl Default for HistSplitResult {
@@ -32,7 +31,7 @@ pub struct OptimizedTreeShannon {
     node_types: Vec<u8>,
     leaf_values: Vec<f64>,
     split_features: Vec<usize>,
-    split_thresholds: Vec<i32>,
+    split_thresholds: Vec<i16>,
     left_children: Vec<usize>,
     right_children: Vec<usize>,
     pub feature_indices: Vec<usize>,
@@ -60,7 +59,7 @@ impl OptimizedTreeShannon {
     }
     
     #[inline(always)]
-    fn set_split(&mut self, node_idx: usize, feature: usize, threshold: i32, 
+    fn set_split(&mut self, node_idx: usize, feature: usize, threshold: i16, 
                  left_child: usize, right_child: usize) {
         self.node_types[node_idx] = 2;
         self.split_features[node_idx] = feature;
@@ -70,7 +69,7 @@ impl OptimizedTreeShannon {
     }
 
     #[inline(always)]
-    pub fn predict_single(&self, x_binned_row: &[i32]) -> f64 {
+    pub fn predict_single(&self, x_binned_row: &[i16]) -> f64 {
         let mut current_node_index = 0;
         
         loop {
@@ -125,8 +124,8 @@ impl OptimizedTreeShannon {
     // OPTIMIZATION: Batch prediction with SIMD-friendly memory access
     pub fn predict_batch(&self, transposed_data: &TransposedData, 
                          sample_indices: &[usize]) -> Vec<f64> {
-        // Use parallelism only for large batches
-        if sample_indices.len() >= 1000 {
+        // Use parallelism for medium to large batches
+        if sample_indices.len() >= 500 {
             sample_indices.par_iter()
                 .map(|&sample_idx| self.predict_from_transposed(transposed_data, sample_idx))
                 .collect()
@@ -438,7 +437,7 @@ impl Drop for TreeBuildingWorkspace {
 fn partition_into_optimized(
     indices: &[usize],
     feature_idx: usize,
-    threshold: i32,
+    threshold: i16,
     transposed_data: &TransposedData,
     left_out: &mut Vec<usize>,
     right_out: &mut Vec<usize>,
@@ -455,8 +454,8 @@ fn partition_into_optimized(
 
     // Branchless partitioning (compiler can vectorize better)
     for &i in indices {
-        let goes_left = feature_values[i] <= threshold;
-        if goes_left {
+        let goes_left = feature_values[i] <= threshold; 
+              if goes_left {
             left_out.push(i);
         } else {
             right_out.push(i);
@@ -475,7 +474,7 @@ fn build_hists_optimized(
     params: &TreeParams,
 ) -> Vec<CachedHistogram> {
     // Parallel threshold: balance overhead vs speedup
-    let use_parallel = feature_indices.len() >= 8 && indices.len() >= 2000;
+    let use_parallel = feature_indices.len() >= 4 && indices.len() >= 1000;
     
     if use_parallel {
         feature_indices.par_iter()
@@ -565,8 +564,8 @@ impl PrecomputedSums {
     fn from_histogram(hist: &CachedHistogram) -> Self {
         let (grad, hess, y, count) = hist.as_slices();
 
-        let g_total = AdaptiveCompute::gradient_accumulate_progressive(grad);
-        let h_total = AdaptiveCompute::gradient_accumulate_progressive(hess);
+        let g_total: f64 = grad.iter().sum();
+        let h_total: f64 = hess.iter().sum();
         let y_total: f64 = y.iter().sum();
         let n_total: f64 = count.iter().sum();
         
@@ -590,10 +589,10 @@ fn find_best_split_cached_optimized(
         return HistSplitResult::default(); 
     }
 
-    // Pre-compute all constants
-    let use_entropy = depth < 4 && precomputed.parent_entropy > 0.5;
+    // Use entropy only for shallow splits where it matters most
+    let use_entropy = depth < 3 && precomputed.parent_entropy > 0.3;
     let adaptive_weight = if use_entropy {
-        params.mi_weight * (-0.1 * depth as f64).exp()
+        params.mi_weight * (-0.15 * depth as f64).exp()
     } else {
         0.0
     };
@@ -613,7 +612,6 @@ fn find_best_split_cached_optimized(
 
     let n_splits = grad.len().saturating_sub(1);
     
-    // OPTIMIZATION 12: Loop unrolling hint for compiler
     for i in 0..n_splits {
         gl += grad[i];
         hl += hess[i];
@@ -642,8 +640,8 @@ fn find_best_split_cached_optimized(
             parent_score
         ) - gamma;
 
-        // Only calculate entropy if needed and gain is promising
-        let combined_gain = if use_entropy && newton_gain > best_split.best_gain * 0.85 {
+        // Calculate entropy only if promising and needed
+        let combined_gain = if use_entropy && newton_gain > best_split.best_gain * 0.9 {
             let left_entropy = calculate_shannon_entropy(n_left - y_left, y_left);
             let right_entropy = calculate_shannon_entropy(
                 n_right - (precomputed.y_total - y_left), 
@@ -659,7 +657,7 @@ fn find_best_split_cached_optimized(
         // Branchless update
         let is_better = combined_gain > best_split.best_gain;
         best_split.best_gain = if is_better { combined_gain } else { best_split.best_gain };
-        best_split.best_bin_idx = if is_better { i as i32 } else { best_split.best_bin_idx };
+        best_split.best_bin_idx = if is_better { i as i16 } else { best_split.best_bin_idx };
     }
     
     best_split
@@ -690,10 +688,10 @@ mod tests {
         tree.set_leaf(1, 0.1);
         tree.set_leaf(2, 0.9);
         
-        let sample_left = vec![2];
+        let sample_left = vec![2i16];
         assert_eq!(tree.predict_single(&sample_left), 0.1);
         
-        let sample_right = vec![5];
+        let sample_right = vec![5i16];
         assert_eq!(tree.predict_single(&sample_right), 0.9);
     }
 }

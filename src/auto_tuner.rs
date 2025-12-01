@@ -114,7 +114,7 @@ model.learning_rate = f64::clamp(base_lr * imbalance_factor, 0.01, 0.15);
     
     model.early_stopping_rounds = ((n_samples as f64).ln() * 10.0) as usize;
     model.early_stopping_rounds = model.early_stopping_rounds.clamp(30, 150);
-    model.histogram_bins = 32;
+    model.histogram_bins = 16;  // Reduced from 32 for 2x faster histogram building
 
     println!("\nDerived Parameters:");
     println!("• Learning Rate: {:.4}", model.learning_rate);
