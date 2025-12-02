@@ -43,8 +43,8 @@ See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
 - **[Benchmark Reproduction](docs/BENCHMARK_REPRODUCTION.md)** - Complete guide to reproduce all results
 - **[Drift Benchmark Report](docs/DRIFT_BENCHMARK_REPORT.md)** - 16 drift scenarios analysis
 - **[Scripts Guide](docs/SCRIPTS_GUIDE.md)** - Data preparation and utility scripts
-- **[Features List](FEATURES.md)** - All 45 production features
-- **[Changelog v2.0](CHANGELOG_V2.md)** - What's new in version 2.0
+- **[Features List](docs/FEATURES.md)** - All 45 production features
+- **[Changelog v2.0](docs/CHANGELOG_V2.md)** - What's new in version 2.0
 
 ---
 
