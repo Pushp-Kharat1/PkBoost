@@ -261,6 +261,81 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
         y_pred = self.predict(X)
         return accuracy_score(y, y_pred, sample_weight=sample_weight)
 
+    def __getstate__(self):
+        """Get state for pickling.
+
+        The Rust model cannot be pickled directly, so we serialize it to bytes
+        using the model's built-in JSON serialization.
+        """
+        state = self.__dict__.copy()
+
+        # Serialize the Rust model to bytes if it exists
+        if '_model' in state and state['_model'] is not None:
+            try:
+                state['_model_bytes'] = state['_model'].to_bytes()
+                del state['_model']
+            except Exception:
+                # Model might not be fitted yet
+                del state['_model']
+                state['_model_bytes'] = None
+
+        return state
+
+    def __setstate__(self, state):
+        """Set state for unpickling.
+
+        Reconstructs the Rust model from serialized bytes.
+        """
+        # Restore the Rust model from bytes if available
+        if '_model_bytes' in state and state['_model_bytes'] is not None:
+            model_bytes = state.pop('_model_bytes')
+            self.__dict__.update(state)
+            self._model = pkboost.PKBoostClassifier.from_bytes(model_bytes)
+        else:
+            state.pop('_model_bytes', None)
+            self.__dict__.update(state)
+            self._model = None
+
+    def save_model(self, path: str):
+        """Save the trained model to a file.
+
+        Parameters
+        ----------
+        path : str
+            File path to save the model (JSON format).
+        """
+        check_is_fitted(self)
+        self._model.save(path)
+
+    @classmethod
+    def load_model(cls, path: str, **params):
+        """Load a trained model from a file.
+
+        Parameters
+        ----------
+        path : str
+            File path to load the model from.
+        **params
+            Additional parameters to set on the estimator.
+
+        Returns
+        -------
+        estimator : PKBoostClassifier
+            The loaded estimator.
+        """
+        instance = cls(**params)
+        instance._model = pkboost.PKBoostClassifier.load(path)
+
+        # Set fitted attributes
+        instance.n_trees_ = instance._model.get_n_trees()
+        instance.feature_importances_ = instance._model.get_feature_importance()
+
+        # We don't know these from the saved model, set reasonable defaults
+        instance.n_features_in_ = len(instance.feature_importances_)
+        instance.classes_ = np.array([0, 1])
+
+        return instance
+
 
 class PKBoostRegressor(BaseEstimator, RegressorMixin):
     """Scikit-learn compatible PKBoost regressor."""

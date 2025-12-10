@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
+use pyo3::types::PyBytes;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray2, PyReadonlyArray1};
 use crate::model::OptimizedPKBoostShannon;
 use crate::living_booster::{AdversarialLivingBooster, SystemState};
@@ -249,6 +250,95 @@ impl PKBoostClassifier {
             return Err(PyRuntimeError::new_err("Model not fitted. Call fit() first."));
         }
         Ok(self.model.as_ref().map(|m| m.trees.len()).unwrap_or(0))
+    }
+
+    /// Serialize the fitted model to bytes (JSON format).
+    /// Returns bytes that can be saved to disk or transmitted.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err("Model not fitted. Call fit() first."));
+        }
+
+        let model = self.model.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Model not initialized"))?;
+
+        let json_bytes = serde_json::to_vec(model)
+            .map_err(|e| PyValueError::new_err(format!("Serialization failed: {}", e)))?;
+
+        Ok(PyBytes::new_bound(py, &json_bytes))
+    }
+
+    /// Deserialize a model from bytes (JSON format).
+    /// This is a class method that returns a new fitted PKBoostClassifier.
+    #[staticmethod]
+    fn from_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        let bytes = data.as_bytes();
+
+        let model: OptimizedPKBoostShannon = serde_json::from_slice(bytes)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization failed: {}", e)))?;
+
+        Ok(Self {
+            model: Some(model),
+            fitted: true,
+        })
+    }
+
+    /// Serialize the fitted model to a JSON string.
+    fn to_json(&self) -> PyResult<String> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err("Model not fitted. Call fit() first."));
+        }
+
+        let model = self.model.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Model not initialized"))?;
+
+        serde_json::to_string(model)
+            .map_err(|e| PyValueError::new_err(format!("Serialization failed: {}", e)))
+    }
+
+    /// Deserialize a model from a JSON string.
+    #[staticmethod]
+    fn from_json(json_str: &str) -> PyResult<Self> {
+        let model: OptimizedPKBoostShannon = serde_json::from_str(json_str)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization failed: {}", e)))?;
+
+        Ok(Self {
+            model: Some(model),
+            fitted: true,
+        })
+    }
+
+    /// Save the fitted model to a file.
+    fn save(&self, path: &str) -> PyResult<()> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err("Model not fitted. Call fit() first."));
+        }
+
+        let model = self.model.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Model not initialized"))?;
+
+        let json_bytes = serde_json::to_vec(model)
+            .map_err(|e| PyValueError::new_err(format!("Serialization failed: {}", e)))?;
+
+        std::fs::write(path, json_bytes)
+            .map_err(|e| PyValueError::new_err(format!("Failed to write file: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Load a fitted model from a file.
+    #[staticmethod]
+    fn load(path: &str) -> PyResult<Self> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read file: {}", e)))?;
+
+        let model: OptimizedPKBoostShannon = serde_json::from_slice(&bytes)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization failed: {}", e)))?;
+
+        Ok(Self {
+            model: Some(model),
+            fitted: true,
+        })
     }
 }
 

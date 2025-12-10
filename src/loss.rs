@@ -2,8 +2,9 @@
 /// Provides gradient and hessian calculations for Newton-Raphson optimization
 
 use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OptimizedShannonLoss;
 
 impl OptimizedShannonLoss {

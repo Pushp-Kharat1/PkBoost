@@ -3,6 +3,7 @@
 
 use rayon::prelude::*;
 use ndarray::ArrayView1;
+use serde::{Serialize, Deserialize};
 use crate::metrics::calculate_shannon_entropy;
 use crate::optimized_data::{TransposedData, CachedHistogram};
 use std::collections::{HashSet, VecDeque};
@@ -24,7 +25,7 @@ impl Default for HistSplitResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizedTreeShannon {
     max_depth: usize,
     // Struct of Arrays (SoA) - excellent for cache locality
@@ -340,7 +341,7 @@ impl OptimizedTreeShannon {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeParams {
     pub min_samples_split: usize,
     pub min_child_weight: f64,
