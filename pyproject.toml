@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pkboost"
-version = "2.0.1"
+version = "2.0.2"
 description = "Gradient boosting that adapts to concept drift in imbalanced data"
 authors = [{name = "Pushp Kharat", email = "kharatpushp16@outlook.com"}]
 readme = "README.md"
@@ -19,7 +19,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "numpy>=2.3.4",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+sklearn = [
+    "scikit-learn>=1.0.0",
 ]
 
 [project.urls]
@@ -28,3 +33,5 @@ Repository = "https://github.com/Pushp-Kharat1/pkboost"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+python-source = "."
+include = ["pkboost_sklearn/**/*.py"]

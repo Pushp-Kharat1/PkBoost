@@ -1,7 +1,8 @@
 use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 use crate::adaptive_parallel::{adaptive_par_map, ParallelComplexity};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizedHistogramBuilder {
     pub max_bins: usize,
     pub bin_edges: Vec<Vec<f64>>,

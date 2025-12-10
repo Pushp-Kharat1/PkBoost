@@ -3,6 +3,7 @@
 
 use rand::prelude::*;
 use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 use std::time::Instant;
 use crate::auto_params::DataStats;
 use crate::auto_tuner::auto_tune_principled;
@@ -258,7 +259,7 @@ fn compute_data_stats(x: &Vec<Vec<f64>>, y: &[f64]) -> DataStats {
     DataStats::from_slices(n_rows, n_cols, pos_count, missing_count, max_cardinality)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct OptimizedPKBoostShannon {
     pub n_estimators: usize,
     pub learning_rate: f64,
@@ -276,14 +277,25 @@ pub struct OptimizedPKBoostShannon {
     pub trees: Vec<OptimizedTreeShannon>,
     base_score: f64,
     best_iteration: usize,
+    #[serde(default = "default_best_score", skip_serializing_if = "is_neg_infinity")]
     best_score: f64,
     fitted: bool,
+    #[serde(default)]
     pub loss_fn: OptimizedShannonLoss,
     pub histogram_builder: Option<OptimizedHistogramBuilder>,
     auto_tuned: bool,
     pub metric_history: Vec<f64>,  // for smoothed early stopping
     pub patience_counter: usize,
-    pub binned_data_cache: Option<TransposedData>,  // 🔥 Cache binned data (3-5x speedup)
+    #[serde(skip)]  // Cache can be rebuilt, no need to serialize
+    pub binned_data_cache: Option<TransposedData>,
+}
+
+fn default_best_score() -> f64 {
+    f64::NEG_INFINITY
+}
+
+fn is_neg_infinity(value: &f64) -> bool {
+    value.is_infinite() && value.is_sign_negative()
 }
 
 impl OptimizedPKBoostShannon {
