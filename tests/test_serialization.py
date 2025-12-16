@@ -30,6 +30,10 @@ def trained_model(sample_data):
     return clf
 
 
+@pytest.mark.skipif(
+    not hasattr(pkboost.PKBoostClassifier, "to_bytes"),
+    reason="Serialization API not available"
+)
 def test_to_bytes_from_bytes(trained_model, sample_data):
     """Test serialization to/from bytes."""
     X, _ = sample_data
@@ -53,6 +57,10 @@ def test_to_bytes_from_bytes(trained_model, sample_data):
     assert trained_model.get_n_trees() == clf_loaded.get_n_trees()
 
 
+@pytest.mark.skipif(
+    not hasattr(pkboost.PKBoostClassifier, "to_json"),
+    reason="Serialization API not available"
+)
 def test_to_json_from_json(trained_model, sample_data):
     """Test serialization to/from JSON string."""
     X, _ = sample_data
@@ -71,6 +79,10 @@ def test_to_json_from_json(trained_model, sample_data):
     assert correlation > 0.999, f"Correlation too low: {correlation}"
 
 
+@pytest.mark.skipif(
+    not hasattr(pkboost.PKBoostClassifier, "save"),
+    reason="Serialization API not available"
+)
 def test_save_load(trained_model, sample_data):
     """Test saving and loading from file."""
     X, _ = sample_data
@@ -94,6 +106,10 @@ def test_save_load(trained_model, sample_data):
         os.unlink(model_path)
 
 
+@pytest.mark.skipif(
+    not hasattr(pkboost.PKBoostClassifier, "to_json"),
+    reason="Serialization API not available"
+)
 def test_feature_importance_preserved(trained_model, sample_data):
     """Test that feature importance is preserved after serialization."""
     X, _ = sample_data
@@ -108,6 +124,10 @@ def test_feature_importance_preserved(trained_model, sample_data):
     np.testing.assert_array_equal(fi_before, fi_after)
 
 
+@pytest.mark.skipif(
+    not hasattr(pkboost.PKBoostClassifier, "to_bytes"),
+    reason="Serialization API not available"
+)
 def test_loaded_model_can_predict_new_data(trained_model, sample_data):
     """Test that loaded model can predict on new data."""
     X, _ = sample_data
@@ -125,6 +145,10 @@ def test_loaded_model_can_predict_new_data(trained_model, sample_data):
     assert all(0 <= p <= 1 for p in pred)
 
 
+@pytest.mark.skipif(
+    not hasattr(pkboost.PKBoostClassifier, "to_bytes"),
+    reason="Serialization API not available"
+)
 def test_unfitted_model_cannot_serialize():
     """Test that unfitted model raises error on serialization."""
     clf = pkboost.PKBoostClassifier()

@@ -110,6 +110,37 @@ Compatible with:
 - Works with sklearn tools out of the box
 - Simpler for most use cases
 
+## Serialization
+
+You can save and load models using the built-in methods or standard Python pickling.
+
+### Save and Load
+
+```python
+# Save model to JSON
+model.save_model('model.json')
+
+# Load model (specify original classes if not [0, 1])
+from pkboost_sklearn import PKBoostClassifier
+loaded = PKBoostClassifier.load_model('model.json', classes=['cat', 'dog'])
+```
+
+### Pickle Support
+
+PKBoost wrappers fully support Python's `pickle` and `joblib` for serialization, making them compatible with tools like `GridSearchCV`'s `n_jobs` parameter.
+
+```python
+import pickle
+
+# Pickle
+with open('model.pkl', 'wb') as f:
+    pickle.dump(model, f)
+
+# Unpickle
+with open('model.pkl', 'rb') as f:
+    loaded_model = pickle.load(f)
+```
+
 ## License
 
 MIT License - Same as PKBoost

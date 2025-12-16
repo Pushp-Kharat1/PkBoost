@@ -28,10 +28,11 @@ sklearn = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Pushp-Kharat1/pkboost"
+Homepage = "https://pkboost.vercel.app/"
 Repository = "https://github.com/Pushp-Kharat1/pkboost"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
 python-source = "."
+
 include = ["pkboost_sklearn/**/*.py"]

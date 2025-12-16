@@ -274,10 +274,8 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
             try:
                 state['_model_bytes'] = state['_model'].to_bytes()
                 del state['_model']
-            except Exception:
-                # Model might not be fitted yet
-                del state['_model']
-                state['_model_bytes'] = None
+            except Exception as exc:
+                raise RuntimeError("Failed to serialize underlying PKBoost model") from exc
 
         return state
 
@@ -308,13 +306,15 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
         self._model.save(path)
 
     @classmethod
-    def load_model(cls, path: str, **params):
+    def load_model(cls, path: str, classes=None, **params):
         """Load a trained model from a file.
 
         Parameters
         ----------
         path : str
             File path to load the model from.
+        classes : array-like, optional
+            Original class labels. Defaults to [0, 1].
         **params
             Additional parameters to set on the estimator.
 
@@ -332,7 +332,7 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
 
         # We don't know these from the saved model, set reasonable defaults
         instance.n_features_in_ = len(instance.feature_importances_)
-        instance.classes_ = np.array([0, 1])
+        instance.classes_ = np.array(classes) if classes is not None else np.array([0, 1])
 
         return instance
 
