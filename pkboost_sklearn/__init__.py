@@ -41,7 +41,7 @@ Adaptive Learning (streaming):
     ...     preds = clf.predict(X_batch)
 """
 
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 __author__ = "Pushp Kharat"
 
 from .sklearn_interface import (
@@ -87,3 +87,35 @@ def show_versions():
         print("=" * 60)
     except ImportError as e:
         print(f"Error importing dependencies: {e}")
+
+
+def check_for_updates():
+    """Check PyPI for a newer version of PKBoost."""
+    try:
+        from urllib.request import urlopen, Request
+        import json
+        
+        # Use a short timeout to prevent blocking application startup
+        pkg_name = "pkboost"
+        url = f"https://pypi.org/pypi/{pkg_name}/json"
+        req = Request(url, headers={'User-Agent': f'pkboost-{__version__}'})
+        
+        with urlopen(req, timeout=2) as response:
+            data = json.load(response)
+            latest_version = data['info']['version']
+            
+        if latest_version != __version__:
+            # specific logic to parse semantic versions could be added here
+            # for now, simple string inequality handles most cases including major bumps
+            print("*" * 60)
+            print(f"✨ A new version of {pkg_name} is available: {latest_version}")
+            print(f"   Current version: {__version__}")
+            print(f"   Run: pip install --upgrade {pkg_name}")
+            print("*" * 60)
+            
+    except Exception:
+        # Silently fail if offline, timeout, or other errors to be non-intrusive
+        pass
+
+# Check for updates on import
+check_for_updates()
