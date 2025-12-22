@@ -2,7 +2,7 @@ use ndarray::{Array1, Array2, ArrayView1};
 
 #[derive(Debug, Clone)]
 pub struct TransposedData {
-    pub features: Array2<i16>,  // CHANGED: i32 → i16 (2x less memory, 2x better cache)
+    pub features: Array2<i16>, // CHANGED: i32 → i16 (2x less memory, 2x better cache)
     pub n_samples: usize,
     pub n_features: usize,
 }
@@ -18,7 +18,7 @@ impl TransposedData {
         }
 
         const BLOCK_SIZE: usize = 64;
-        
+
         let n_samples = rows.len();
         let n_features = rows[0].len();
         let mut features = Array2::zeros((n_features, n_samples));
@@ -26,15 +26,16 @@ impl TransposedData {
         // Block-based transposition for better cache locality
         for feature_block_start in (0..n_features).step_by(BLOCK_SIZE) {
             let feature_block_end = (feature_block_start + BLOCK_SIZE).min(n_features);
-            
+
             for sample_block_start in (0..n_samples).step_by(BLOCK_SIZE) {
                 let sample_block_end = (sample_block_start + BLOCK_SIZE).min(n_samples);
-                
+
                 for sample_idx in sample_block_start..sample_block_end {
                     let row = &rows[sample_idx];
                     for feature_idx in feature_block_start..feature_block_end {
                         if feature_idx < row.len() {
-                            features[[feature_idx, sample_idx]] = row[feature_idx] as i16;  // CHANGED: cast to i16
+                            features[[feature_idx, sample_idx]] = row[feature_idx] as i16;
+                            // CHANGED: cast to i16
                         }
                     }
                 }
@@ -48,7 +49,8 @@ impl TransposedData {
         }
     }
 
-    pub fn get_feature_values(&self, feature_idx: usize) -> &[i16] {  // CHANGED: i32 → i16
+    pub fn get_feature_values(&self, feature_idx: usize) -> &[i16] {
+        // CHANGED: i32 → i16
         self.features.row(feature_idx).to_slice().unwrap()
     }
 
@@ -65,7 +67,7 @@ impl TransposedData {
         if n_bins == 0 {
             return CachedHistogram::new(vec![], vec![], vec![], vec![]);
         }
-        
+
         let mut hist_grad = vec![0.0; n_bins];
         let mut hist_hess = vec![0.0; n_bins];
         let mut hist_y = vec![0.0; n_bins];
@@ -75,17 +77,17 @@ impl TransposedData {
         let grad_slice = grad.as_slice().unwrap();
         let hess_slice = hess.as_slice().unwrap();
         let y_slice = y.as_slice().unwrap();
-        
+
         // Unroll loop for better performance
         let mut i = 0;
         let len = indices.len();
-        
+
         while i + 4 <= len {
             let idx0 = indices[i];
             let idx1 = indices[i + 1];
             let idx2 = indices[i + 2];
             let idx3 = indices[i + 3];
-            
+
             if idx0 < self.n_samples {
                 let bin = (feature_values[idx0] as usize).min(n_bins - 1);
                 hist_grad[bin] += grad_slice[idx0];
@@ -116,7 +118,7 @@ impl TransposedData {
             }
             i += 4;
         }
-        
+
         // Handle remaining elements
         while i < len {
             let idx = indices[i];
@@ -132,13 +134,9 @@ impl TransposedData {
 
         CachedHistogram::new(hist_grad, hist_hess, hist_y, hist_count)
     }
-
-
 }
 
-
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CachedHistogram {
     pub grad: Array1<f64>,
     pub hess: Array1<f64>,
@@ -174,7 +172,12 @@ impl CachedHistogram {
         let y = &self.y - &other.y;
         let count = &self.count - &other.count;
 
-        Self { grad, hess, y, count }
+        Self {
+            grad,
+            hess,
+            y,
+            count,
+        }
     }
 
     pub fn as_slices(&self) -> (&[f64], &[f64], &[f64], &[f64]) {
