@@ -660,11 +660,14 @@ fn find_best_split_cached_optimized(
 
     let n_splits = grad.len().saturating_sub(1);
 
+    // OPTIMIZATION: Remove bounds checks from tight loop
     for i in 0..n_splits {
-        gl += grad[i];
-        hl += hess[i];
-        y_left += y[i];
-        n_left += count[i];
+        unsafe {
+            gl += *grad.get_unchecked(i);
+            hl += *hess.get_unchecked(i);
+            y_left += *y.get_unchecked(i);
+            n_left += *count.get_unchecked(i);
+        }
 
         // Early continue (branch prediction friendly)
         if n_left < 1.0 || hl < min_child_weight {
@@ -679,11 +682,10 @@ fn find_best_split_cached_optimized(
             continue;
         }
 
-        // Vectorized gain calculation
-        let gl_sq = gl * gl;
-        let gr_sq = gr * gr;
-        let newton_gain =
-            0.5 * (gl_sq / (hl + reg_lambda) + gr_sq / (hr + reg_lambda) - parent_score) - gamma;
+        // Optimized gain calculation (removed redundant multiplications)
+        let left_score = gl * gl / (hl + reg_lambda);
+        let right_score = gr * gr / (hr + reg_lambda);
+        let newton_gain = 0.5 * (left_score + right_score - parent_score) - gamma;
 
         // Calculate entropy only if promising and needed
         let combined_gain = if use_entropy && newton_gain > best_split.best_gain * 0.9 {
@@ -701,17 +703,10 @@ fn find_best_split_cached_optimized(
         };
 
         // Branchless update
-        let is_better = combined_gain > best_split.best_gain;
-        best_split.best_gain = if is_better {
-            combined_gain
-        } else {
-            best_split.best_gain
-        };
-        best_split.best_bin_idx = if is_better {
-            i as i16
-        } else {
-            best_split.best_bin_idx
-        };
+        if combined_gain > best_split.best_gain {
+            best_split.best_gain = combined_gain;
+            best_split.best_bin_idx = i as i16;
+        }
     }
 
     best_split

@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import xgboost as xgb
-from pkboost import PKBoostAdaptive
+from pkboost import PKBoostClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, precision_recall_curve
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -263,8 +263,8 @@ xgb_model = xgb.train(
 print("✓ XGBoost trained\n")
 
 print("Training PKBoost...")
-pkb_model = PKBoostAdaptive()
-pkb_model.fit_initial(X_train, y_train, x_val=X_val, y_val=y_val)
+pkb_model = PKBoostClassifier.auto()
+pkb_model.fit(X_train, y_train, x_val=X_val, y_val=y_val)
 print("✓ PKBoost trained\n")
 
 # Baseline evaluation

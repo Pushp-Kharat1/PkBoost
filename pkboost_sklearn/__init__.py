@@ -41,7 +41,7 @@ Adaptive Learning (streaming):
     ...     preds = clf.predict(X_batch)
 """
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 __author__ = "Pushp Kharat"
 
 from .sklearn_interface import (

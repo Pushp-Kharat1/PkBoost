@@ -1,19 +1,19 @@
 // Main gradient boosting model with auto-tuning and adaptive features
 // This is basically xgboost but with shannon entropy guidance and better handling of imbalanced data
 
-use rand::prelude::*;
-use rayon::prelude::*;
-use serde::{Serialize, Deserialize};
-use std::time::Instant;
 use crate::auto_params::DataStats;
 use crate::auto_tuner::auto_tune_principled;
 use crate::{
     histogram_builder::OptimizedHistogramBuilder,
     loss::OptimizedShannonLoss,
-    tree::{OptimizedTreeShannon, TreeParams},
-    metrics::{calculate_roc_auc, calculate_pr_auc},
+    metrics::{calculate_pr_auc, calculate_roc_auc},
     optimized_data::TransposedData,
+    tree::{OptimizedTreeShannon, TreeParams},
 };
+use rand::prelude::*;
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 // Builder pattern for creating models with custom hyperparameters
 pub struct PKBoostBuilder {
@@ -132,7 +132,7 @@ impl PKBoostBuilder {
     pub fn build_with_data(self, x: &Vec<Vec<f64>>, y: &[f64]) -> OptimizedPKBoostShannon {
         if self.use_auto_params {
             let stats = compute_data_stats(x, y);
-            let imbalance = (1.0 - stats.pos_ratio) / stats.pos_ratio.max(1e-6);  // class weight
+            let imbalance = (1.0 - stats.pos_ratio) / stats.pos_ratio.max(1e-6); // class weight
 
             println!("\nAuto-Parameter Selection :");
             println!("  Dataset shape: {} × {}", stats.n_rows, stats.n_cols);
@@ -180,7 +180,9 @@ impl PKBoostBuilder {
                 gamma: self.gamma.unwrap_or(model.gamma),
                 subsample: self.subsample.unwrap_or(model.subsample),
                 colsample_bytree: self.colsample_bytree.unwrap_or(model.colsample_bytree),
-                early_stopping_rounds: self.early_stopping_rounds.unwrap_or(model.early_stopping_rounds),
+                early_stopping_rounds: self
+                    .early_stopping_rounds
+                    .unwrap_or(model.early_stopping_rounds),
                 histogram_bins: self.histogram_bins.unwrap_or(model.histogram_bins),
                 mi_weight: self.mi_weight.unwrap_or(model.mi_weight),
                 scale_pos_weight: self.scale_pos_weight.unwrap_or(model.scale_pos_weight),
@@ -266,27 +268,30 @@ pub struct OptimizedPKBoostShannon {
     pub max_depth: usize,
     pub min_samples_split: usize,
     pub min_child_weight: f64,
-    pub reg_lambda: f64,  // L2 regularization
-    pub gamma: f64,  // complexity penalty
-    pub subsample: f64,  // row sampling ratio
-    pub colsample_bytree: f64,  // column sampling ratio
+    pub reg_lambda: f64,       // L2 regularization
+    pub gamma: f64,            // complexity penalty
+    pub subsample: f64,        // row sampling ratio
+    pub colsample_bytree: f64, // column sampling ratio
     pub early_stopping_rounds: usize,
     pub histogram_bins: usize,
-    pub mi_weight: f64,  // weight for mutual information (entropy) term
-    pub scale_pos_weight: f64,  // upweight minority class
+    pub mi_weight: f64,        // weight for mutual information (entropy) term
+    pub scale_pos_weight: f64, // upweight minority class
     pub trees: Vec<OptimizedTreeShannon>,
     base_score: f64,
     best_iteration: usize,
-    #[serde(default = "default_best_score", skip_serializing_if = "is_neg_infinity")]
+    #[serde(
+        default = "default_best_score",
+        skip_serializing_if = "is_neg_infinity"
+    )]
     best_score: f64,
     fitted: bool,
     #[serde(default)]
     pub loss_fn: OptimizedShannonLoss,
     pub histogram_builder: Option<OptimizedHistogramBuilder>,
     auto_tuned: bool,
-    pub metric_history: Vec<f64>,  // for smoothed early stopping
+    pub metric_history: Vec<f64>, // for smoothed early stopping
     pub patience_counter: usize,
-    #[serde(skip)]  // Cache can be rebuilt, no need to serialize
+    #[serde(skip)] // Cache can be rebuilt, no need to serialize
     pub binned_data_cache: Option<TransposedData>,
 }
 
@@ -316,10 +321,18 @@ impl OptimizedPKBoostShannon {
     }
 
     // main training loop - standard gradient boosting with performance optimizations
-    pub fn fit(&mut self, x: &Vec<Vec<f64>>, y: &[f64], eval_set: Option<(&Vec<Vec<f64>>, &[f64])>, verbose: bool) -> Result<(), String> {
+    pub fn fit(
+        &mut self,
+        x: &Vec<Vec<f64>>,
+        y: &[f64],
+        eval_set: Option<(&Vec<Vec<f64>>, &[f64])>,
+        verbose: bool,
+    ) -> Result<(), String> {
         let fit_start_time = Instant::now();
         let n_samples = x.len();
-        if n_samples == 0 { return Err("Input data is empty".to_string()); }
+        if n_samples == 0 {
+            return Err("Input data is empty".to_string());
+        }
         let n_features = x[0].len();
 
         let pos_ratio = y.iter().sum::<f64>() / y.len() as f64;
@@ -328,25 +341,32 @@ impl OptimizedPKBoostShannon {
             println!("=== PKBoost Training Started ===");
             println!("Dataset: {} samples, {} features", n_samples, n_features);
             println!("Positive ratio: {:.3}", pos_ratio);
-            println!("Hyperparams: lr={:.3}, depth={}, trees={}, scale_pos_weight={:.2}",
-                     self.learning_rate, self.max_depth, self.n_estimators, self.scale_pos_weight);
-            println!("Validation set: {}", if eval_set.is_some() { "Yes" } else { "No" });
+            println!(
+                "Hyperparams: lr={:.3}, depth={}, trees={}, scale_pos_weight={:.2}",
+                self.learning_rate, self.max_depth, self.n_estimators, self.scale_pos_weight
+            );
+            println!(
+                "Validation set: {}",
+                if eval_set.is_some() { "Yes" } else { "No" }
+            );
             println!();
         }
 
         self.base_score = self.loss_fn.init_score(y);
-        let mut train_preds = vec![self.base_score; n_samples];  // raw predictions (log-odds)
+        let mut train_preds = vec![self.base_score; n_samples]; // raw predictions (log-odds)
 
         // bin continuous features into histograms for faster splitting
         if self.histogram_builder.is_none() {
-            if verbose { println!("Building histograms (one-time)..."); }
+            if verbose {
+                println!("Building histograms (one-time)...");
+            }
             let mut histogram_builder = OptimizedHistogramBuilder::new(self.histogram_bins);
             histogram_builder.fit(x);
             self.histogram_builder = Some(histogram_builder);
         }
-        
+
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
-        
+
         // 🔥 OPTIMIZATION: Transform ONCE and cache (biggest speedup!)
         // WHY: Eliminates 30-40% of runtime by avoiding repeated transforms
         let x_processed = histogram_builder.transform(x);
@@ -355,8 +375,13 @@ impl OptimizedPKBoostShannon {
         let transposed_data = self.binned_data_cache.as_ref().unwrap();
 
         let (x_val_processed, mut val_preds) = if let Some((x_val, y_val)) = eval_set {
-            (Some(histogram_builder.transform(x_val)), Some(vec![self.base_score; y_val.len()]))
-        } else { (None, None) };
+            (
+                Some(histogram_builder.transform(x_val)),
+                Some(vec![self.base_score; y_val.len()]),
+            )
+        } else {
+            (None, None)
+        };
 
         let val_transposed = if let Some(ref x_val_proc) = x_val_processed {
             Some(TransposedData::from_rows(x_val_proc))
@@ -367,11 +392,19 @@ impl OptimizedPKBoostShannon {
         if verbose {
             println!("Histogram building complete. Starting boosting iterations...");
             if eval_set.is_some() {
-                println!("{:<8} {:<10} {:<10} {:<8} {:<12} {:<10}",
-                         "Iter", "Val-ROC", "Val-PR", "Time(s)", "Samples/sec", "Status");
+                println!(
+                    "{:<8} {:<10} {:<10} {:<8} {:<12} {:<10}",
+                    "Iter", "Val-ROC", "Val-PR", "Time(s)", "Samples/sec", "Status"
+                );
                 println!("{}", "-".repeat(65));
             }
         }
+
+        // Timing accumulators (reset every 100 iterations to show breakdown)
+        let mut time_grad_hess = std::time::Duration::ZERO;
+        let mut time_tree_fit = std::time::Duration::ZERO;
+        let mut time_predict = std::time::Duration::ZERO;
+        let mut time_update = std::time::Duration::ZERO;
 
         // boosting iterations
         for iteration in 0..self.n_estimators {
@@ -388,9 +421,12 @@ impl OptimizedPKBoostShannon {
             feature_indices.shuffle(&mut rng);
             feature_indices.truncate(feature_size);
 
-            // compute gradients and hessians for newton boosting
-            let grad = self.loss_fn.gradient(y, &train_preds, self.scale_pos_weight);
-            let hess = self.loss_fn.hessian(y, &train_preds, self.scale_pos_weight);
+            // PHASE 1: Compute gradients and hessians
+            let t0 = Instant::now();
+            let (grad, hess) =
+                self.loss_fn
+                    .gradient_hessian(y, &train_preds, self.scale_pos_weight);
+            time_grad_hess += t0.elapsed();
 
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
 
@@ -400,12 +436,15 @@ impl OptimizedPKBoostShannon {
                 reg_lambda: self.reg_lambda,
                 gamma: self.gamma,
                 mi_weight: self.mi_weight,
-                n_bins_per_feature: feature_indices.iter().map(|&i|
-                    histogram_builder.n_bins_per_feature[i]
-                ).collect(),
-                feature_elimination_threshold: 0.01, // OPTIMIZATION 1: Early feature elimination
+                n_bins_per_feature: feature_indices
+                    .iter()
+                    .map(|&i| histogram_builder.n_bins_per_feature[i])
+                    .collect(),
+                feature_elimination_threshold: 0.01,
             };
 
+            // PHASE 2: Tree fitting (includes histogram building)
+            let t1 = Instant::now();
             tree.fit_optimized(
                 &transposed_data,
                 &y,
@@ -413,18 +452,37 @@ impl OptimizedPKBoostShannon {
                 &hess,
                 &sample_indices,
                 &feature_indices,
-                &tree_params
+                &tree_params,
             );
+            time_tree_fit += t1.elapsed();
 
+            // Print timing breakdown every 100 iterations
             if (iteration + 1) % 100 == 0 && verbose {
                 let grad_norm: f64 = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
                 let grad_mean: f64 = grad.iter().sum::<f64>() / grad.len() as f64;
                 let pred_min = train_preds.iter().cloned().fold(f64::INFINITY, f64::min);
-                let pred_max = train_preds.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let pred_max = train_preds
+                    .iter()
+                    .cloned()
+                    .fold(f64::NEG_INFINITY, f64::max);
                 let pred_mean = train_preds.iter().sum::<f64>() / train_preds.len() as f64;
 
                 eprintln!("DEBUG Iter {}: grad_norm={:.4}, grad_mean={:.6}, pred_range=[{:.2}, {:.2}], pred_mean={:.4}",
                          iteration + 1, grad_norm, grad_mean, pred_min, pred_max, pred_mean);
+
+                // Print timing breakdown
+                let total_phase_time = time_grad_hess + time_tree_fit + time_predict + time_update;
+                eprintln!("  TIMING (last 100 iters): grad/hess={:.2}s ({:.1}%), tree_fit={:.2}s ({:.1}%), predict={:.2}s ({:.1}%), update={:.2}s ({:.1}%)",
+                    time_grad_hess.as_secs_f64(), 100.0 * time_grad_hess.as_secs_f64() / total_phase_time.as_secs_f64(),
+                    time_tree_fit.as_secs_f64(), 100.0 * time_tree_fit.as_secs_f64() / total_phase_time.as_secs_f64(),
+                    time_predict.as_secs_f64(), 100.0 * time_predict.as_secs_f64() / total_phase_time.as_secs_f64(),
+                    time_update.as_secs_f64(), 100.0 * time_update.as_secs_f64() / total_phase_time.as_secs_f64());
+
+                // Reset timers
+                time_grad_hess = std::time::Duration::ZERO;
+                time_tree_fit = std::time::Duration::ZERO;
+                time_predict = std::time::Duration::ZERO;
+                time_update = std::time::Duration::ZERO;
 
                 if grad_norm > 10000.0 {
                     eprintln!("  WARNING: Gradient explosion detected!");
@@ -432,28 +490,33 @@ impl OptimizedPKBoostShannon {
                 if pred_max > 50.0 || pred_min < -50.0 {
                     eprintln!("  WARNING: Prediction values out of safe range!");
                 }
-                
+
                 if grad_norm < 0.001 {
                     eprintln!("  WARNING: Gradients nearly zero - stopping early");
                     return Ok(());
                 }
             }
 
-            // Use batch prediction for better performance
+            // PHASE 3: Batch prediction
+            let t2 = Instant::now();
             let sample_indices_vec: Vec<usize> = (0..n_samples).collect();
             let tree_preds = tree.predict_batch(&transposed_data, &sample_indices_vec);
+            time_predict += t2.elapsed();
 
             let adaptive_lr = self.learning_rate;
 
-            // update predictions with adaptive learning rate
-            train_preds.par_iter_mut().zip(tree_preds.par_iter()).for_each(|(current_pred, tree_pred)| {
-                *current_pred += adaptive_lr * tree_pred
-            });
+            // PHASE 4: Update predictions
+            let t3 = Instant::now();
+            train_preds
+                .par_iter_mut()
+                .zip(tree_preds.par_iter())
+                .for_each(|(current_pred, tree_pred)| *current_pred += adaptive_lr * tree_pred);
 
             // clamp to prevent numerical instability
             train_preds.par_iter_mut().for_each(|pred| {
                 *pred = pred.clamp(-10.0, 10.0);
             });
+            time_update += t3.elapsed();
 
             if let (Some(ref val_transposed_data), Some(ref mut val_preds_ref), Some((_, y_val))) =
                 (val_transposed.as_ref(), val_preds.as_mut(), eval_set)
@@ -461,35 +524,51 @@ impl OptimizedPKBoostShannon {
                 let val_sample_indices: Vec<usize> = (0..val_transposed_data.n_samples).collect();
                 let val_tree_preds = tree.predict_batch(val_transposed_data, &val_sample_indices);
 
-                val_preds_ref.par_iter_mut().zip(val_tree_preds.par_iter()).for_each(|(current_pred, tree_pred)| {
-                    *current_pred += adaptive_lr * tree_pred;
-                });
-                
+                val_preds_ref
+                    .par_iter_mut()
+                    .zip(val_tree_preds.par_iter())
+                    .for_each(|(current_pred, tree_pred)| {
+                        *current_pred += adaptive_lr * tree_pred;
+                    });
+
                 // evaluate on validation set periodically (less frequent = faster)
                 if (iteration + 1) % 20 == 0 || iteration == 0 {
                     let val_probs = self.loss_fn.sigmoid(val_preds_ref);
                     let val_roc = calculate_roc_auc(y_val, &val_probs);
-                    let val_pr = calculate_pr_auc(y_val, &val_probs);  // PR-AUC better for imbalanced data
-                    
+                    let val_pr = calculate_pr_auc(y_val, &val_probs); // PR-AUC better for imbalanced data
+
                     // smooth metrics over last 3 evaluations to reduce noise
                     if self.metric_history.len() >= 3 {
                         self.metric_history.remove(0);
                     }
                     self.metric_history.push(val_pr);
-                    
-                    let smoothed_metric = self.metric_history.iter().sum::<f64>() / self.metric_history.len() as f64;
-                    
+
+                    let smoothed_metric =
+                        self.metric_history.iter().sum::<f64>() / self.metric_history.len() as f64;
+
                     if verbose && ((iteration + 1) % 20 == 0 || iteration == 0) {
                         let total_time = fit_start_time.elapsed().as_secs_f64();
-                        let samples_per_sec = (n_samples as f64 * (iteration + 1) as f64) / total_time;
-                        println!("{:<8} {:<10.4} {:<10.4} {:<8.1} {:<12.0} {:<10}",
-                                 iteration + 1, val_roc, val_pr, total_time, samples_per_sec, "Training");
-                        println!("  ↳ Smoothed PR-AUC: {:.4} (best: {:.4} @ iter {})", 
-                                 smoothed_metric, self.best_score, self.best_iteration + 1);
+                        let samples_per_sec =
+                            (n_samples as f64 * (iteration + 1) as f64) / total_time;
+                        println!(
+                            "{:<8} {:<10.4} {:<10.4} {:<8.1} {:<12.0} {:<10}",
+                            iteration + 1,
+                            val_roc,
+                            val_pr,
+                            total_time,
+                            samples_per_sec,
+                            "Training"
+                        );
+                        println!(
+                            "  ↳ Smoothed PR-AUC: {:.4} (best: {:.4} @ iter {})",
+                            smoothed_metric,
+                            self.best_score,
+                            self.best_iteration + 1
+                        );
                         use std::io::{self, Write};
                         let _ = io::stdout().flush();
                     }
-                    
+
                     // update best score if we improved
                     if smoothed_metric > self.best_score + 1e-5 {
                         self.best_score = smoothed_metric;
@@ -498,17 +577,19 @@ impl OptimizedPKBoostShannon {
                     } else {
                         self.patience_counter += 1;
                     }
-                    
+
                     // early stopping if no improvement
                     if self.patience_counter >= self.early_stopping_rounds {
-                        if verbose { 
-                            println!("\nEarly stopping at iteration {} (no improvement for {} rounds)", 
-                                     iteration + 1, self.early_stopping_rounds); 
+                        if verbose {
+                            println!(
+                                "\nEarly stopping at iteration {} (no improvement for {} rounds)",
+                                iteration + 1,
+                                self.early_stopping_rounds
+                            );
                         }
                         break;
                     }
                 }
-
             } else {
                 self.best_iteration = iteration;
             }
@@ -532,7 +613,9 @@ impl OptimizedPKBoostShannon {
     }
 
     pub fn predict_proba(&self, x: &Vec<Vec<f64>>) -> Result<Vec<f64>, String> {
-        if !self.fitted { return Err("Model not fitted".to_string()); }
+        if !self.fitted {
+            return Err("Model not fitted".to_string());
+        }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
         let x_proc = histogram_builder.transform(x);
@@ -544,17 +627,22 @@ impl OptimizedPKBoostShannon {
 
         for tree in &self.trees {
             let tree_preds = tree.predict_batch(&transposed_data, &sample_indices);
-            predictions.par_iter_mut().zip(tree_preds.par_iter()).for_each(|(current_pred, tree_pred)| {
-                *current_pred += self.learning_rate * tree_pred;
-            });
+            predictions
+                .par_iter_mut()
+                .zip(tree_preds.par_iter())
+                .for_each(|(current_pred, tree_pred)| {
+                    *current_pred += self.learning_rate * tree_pred;
+                });
         }
-        
+
         Ok(self.loss_fn.sigmoid(&predictions))
     }
 
     // OPTIMIZATION 5: Memory-mapped prediction for large datasets
     pub fn predict_proba_chunked(&self, x: &Vec<Vec<f64>>) -> Result<Vec<f64>, String> {
-        if !self.fitted { return Err("Model not fitted".to_string()); }
+        if !self.fitted {
+            return Err("Model not fitted".to_string());
+        }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
         let x_proc = histogram_builder.transform(x);
@@ -565,22 +653,28 @@ impl OptimizedPKBoostShannon {
 
         // OPTIMIZATION: Process trees in chunks for better cache utilization
         const TREE_CHUNK_SIZE: usize = 8;
-        
+
         for chunk in self.trees.chunks(TREE_CHUNK_SIZE) {
             for tree in chunk {
                 // Process all samples for this tree chunk
                 for i in 0..n_samples {
-                    predictions[i] += self.learning_rate * 
-                        tree.predict_from_transposed(&transposed_data, i);
+                    predictions[i] +=
+                        self.learning_rate * tree.predict_from_transposed(&transposed_data, i);
                 }
             }
         }
-        
+
         Ok(self.loss_fn.sigmoid(&predictions))
     }
 
-    pub fn predict_proba_batch(&self, x: &Vec<Vec<f64>>, batch_size: usize) -> Result<Vec<f64>, String> {
-        if !self.fitted { return Err("Model not fitted".to_string()); }
+    pub fn predict_proba_batch(
+        &self,
+        x: &Vec<Vec<f64>>,
+        batch_size: usize,
+    ) -> Result<Vec<f64>, String> {
+        if !self.fitted {
+            return Err("Model not fitted".to_string());
+        }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
         let x_proc = histogram_builder.transform(x);
@@ -592,13 +686,17 @@ impl OptimizedPKBoostShannon {
             let mut batch_preds = vec![self.base_score; batch_end - batch_start];
 
             for tree in &self.trees {
-                let tree_preds: Vec<f64> = (batch_start..batch_end).into_par_iter()
+                let tree_preds: Vec<f64> = (batch_start..batch_end)
+                    .into_par_iter()
                     .map(|sample_idx| tree.predict_from_transposed(&transposed_data, sample_idx))
                     .collect();
 
-                batch_preds.par_iter_mut().zip(tree_preds.par_iter()).for_each(|(current_pred, tree_pred)| {
-                    *current_pred += self.learning_rate * tree_pred;
-                });
+                batch_preds
+                    .par_iter_mut()
+                    .zip(tree_preds.par_iter())
+                    .for_each(|(current_pred, tree_pred)| {
+                        *current_pred += self.learning_rate * tree_pred;
+                    });
             }
 
             all_predictions.extend(batch_preds);
@@ -610,18 +708,19 @@ impl OptimizedPKBoostShannon {
     // remove trees that depend heavily on dead features
     pub fn prune_trees(&mut self, dead_features: &[usize], threshold: f64) -> usize {
         let initial = self.trees.len();
-        self.trees.retain(|tree| {
-            tree.feature_dependency_score(dead_features) < threshold
-        });
+        self.trees
+            .retain(|tree| tree.feature_dependency_score(dead_features) < threshold);
         initial - self.trees.len()
     }
-    
+
     pub fn get_feature_usage(&self) -> Vec<usize> {
-        let n_features = self.histogram_builder.as_ref()
+        let n_features = self
+            .histogram_builder
+            .as_ref()
             .map(|h| h.n_bins_per_feature.len())
             .unwrap_or(0);
         let mut usage = vec![0; n_features];
-        
+
         for tree in &self.trees {
             for &feat in &tree.get_used_features() {
                 if feat < usage.len() {
@@ -643,7 +742,7 @@ pub fn quick_train(
     x_train: &Vec<Vec<f64>>,
     y_train: &[f64],
     x_val: Option<(&Vec<Vec<f64>>, &[f64])>,
-    verbose: bool
+    verbose: bool,
 ) -> Result<OptimizedPKBoostShannon, String> {
     let mut model = OptimizedPKBoostShannon::auto(x_train, y_train);
     model.fit(x_train, y_train, x_val, verbose)?;
@@ -655,7 +754,7 @@ pub fn train_with_overrides(
     y_train: &[f64],
     max_depth: Option<usize>,
     learning_rate: Option<f64>,
-    verbose: bool
+    verbose: bool,
 ) -> Result<OptimizedPKBoostShannon, String> {
     let mut builder = OptimizedPKBoostShannon::builder().auto();
 

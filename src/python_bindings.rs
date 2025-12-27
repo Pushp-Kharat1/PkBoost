@@ -11,7 +11,7 @@ fn ensure_contiguous<'py>(py: Python<'py>, arr: &Bound<'py, PyAny>) -> PyResult<
     let np = py.import("numpy")?;
     let kwargs = pyo3::types::PyDict::new(py);
     kwargs.set_item("dtype", "float64")?;
-    kwargs.set_item("order", "C")?;
+    // Note: 'order' kwarg is not supported by ascontiguousarray (it already returns C-order)
     np.call_method("ascontiguousarray", (arr,), Some(&kwargs))
 }
 
@@ -649,7 +649,7 @@ impl PKBoostAdaptive {
     }
 }
 
-#[pyclass]
+#[pyclass(name = "PKBoostRegressor")]
 pub struct PKBoostRegressorPy {
     model: Option<PKBoostRegressor>,
     fitted: bool,
@@ -811,7 +811,7 @@ impl PKBoostRegressorPy {
     }
 }
 
-#[pyclass]
+#[pyclass(name = "PKBoostMultiClass")]
 pub struct PKBoostMultiClassPy {
     model: Option<MultiClassPKBoost>,
     fitted: bool,
