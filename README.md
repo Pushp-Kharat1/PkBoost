@@ -417,7 +417,7 @@ cargo build --release --jobs 1  # Limit parallel compilation
 
 Open for contributions! Fork & PR: Focus on extensions, optimizations, or new tests. Issues welcome for bugs or dataset requests.
 
-**License:** MIT – Free for commercial use.  
+**License:** GNU License – Free for commercial use.  
 **Contact:** kharatpushp16@outlook.com
 
 ---
@@ -445,4 +445,4 @@ If you use PKBoost in your research, please cite:
 
 ---
 
-**Project by Pushp Kharat.** Last updated: October 24, 2025.
+**Library by Pushp Kharat.** Last updated: December 27, 2025.
