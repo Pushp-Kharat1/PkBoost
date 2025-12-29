@@ -1,23 +1,18 @@
 <div align="center">
-  <img width="150" height="150" alt="PKBoost Logo" src="https://github.com/user-attachments/assets/fe0a3cdf-88c5-42b4-81cf-9db14312a018"/>
-</div>
 
-<div align="center">
-  <h1 style="font-size: 120px; font-weight: 900; margin: 40px 0 20px 0; background: linear-gradient(90deg, #DE4F1F, #FF6B6B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 4px; text-shadow: 0 4px 8px rgba(0,0,0,0.3);">
-    PKBoost v2.0
-  </h1>
-  <p style="font-size: 24px; color: #8b949e; margin: 0 0 40px 0;">
-    <strong>An Adaptive Gradient Boosting Library</strong>
-  </p>
-</div>
+# PKBoost 
 
-**Gradient boosting that adjusts to concept drift in imbalanced multi-class data.**
+**An Adaptive Gradient Boosting Library**
 
-[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white&style=for-the-badge)](https://www.rust-lang.org/)
-[![PyPI](https://img.shields.io/pypi/v/pkboost?color=blue&logo=pypi&logoColor=white&style=for-the-badge)](https://pypi.org/project/pkboost/)
-[![Total Downloads](https://img.shields.io/pepy/dt/pkboost?style=for-the-badge&color=orange&label=Total)](https://pepy.tech/project/pkboost)
+[![Rust](https://img.shields.io/badge/Rust-1.70%2B-black?style=for-the-badge)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge)](https://pypi.org/project/pkboost/)
+[![PyPI](https://img.shields.io/pypi/v/pkboost?style=for-the-badge)](https://pypi.org/project/pkboost/)
+[![Downloads](https://img.shields.io/pepy/dt/pkboost?style=for-the-badge)](https://pepy.tech/project/pkboost)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17568991.svg)](https://doi.org/10.5281/zenodo.17568991)
+
+</div>
+
 
 Built from scratch in Rust, PKBoost (Performance-Based Knowledge Booster) manages changing data distributions in fraud detection with a fraud rate of 0.2%. It shows less than 2% degradation under drift. In comparison, XGBoost experiences a 31.8% drop and LightGBM a 42.5% drop. PKBoost outperforms XGBoost by 10-18% on the Standard dataset when no drift is applied. It employs information theory with Shannon entropy and Newton Raphson to identify shifts in rare events and trigger an adaptive "metamorphosis" for real-time recovery.
 
@@ -25,7 +20,7 @@ Built from scratch in Rust, PKBoost (Performance-Based Knowledge Booster) manage
 
 **Perfect for:** Multi-class fraud detection, real-time medical diagnosis, anomaly detection in changing environments, or any scenario where data evolves over time and minority classes are critical.
 
-## 🆕 What's New in v2.0
+## What's New in v2.0
 
 - **Multi-Class Classification**: One-vs-Rest with softmax (92.36% on Dry Bean, 7 classes)
 - **165x Faster Adaptation**: Hierarchical Adaptive Boosting (HAB) with selective retraining
@@ -37,7 +32,7 @@ See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 - **[Python Package Guide](docs/PYTHON_BINDINGS.md)** - Python API, installation, examples
 - **[Benchmark Reproduction](docs/BENCHMARK_REPRODUCTION.md)** - Complete guide to reproduce all results
@@ -48,7 +43,7 @@ See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ## To use it in Python Please refer to: [Python Bindings Guide](docs/PYTHON_BINDINGS.md)
 
@@ -76,7 +71,7 @@ cargo run --release --bin benchmark
 
 ---
 
-## 💻 Basic Usage
+## Basic Usage
 
 To train and predict (see `src/bin/benchmark.rs` for a full example):
 
@@ -185,7 +180,7 @@ println!("Accuracy: {:.2}%", accuracy * 100.0);
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 - **Extreme Imbalance Handling:** Automatic class weighting and MI regularization boost recall on rare positives without reducing precision. Binary classification only.
 - **Adaptive Hyperparameters:** `auto_tune_principled` profiles your dataset for optimal params—no manual tuning needed.
@@ -198,7 +193,7 @@ println!("Accuracy: {:.2}%", accuracy * 100.0);
 
 ---
 
-## 📊 Benchmarks
+## Benchmarks
 
 **Testing methodology:** All models use default settings with no hyperparameter tuning. This reflects real-world usage where most practitioners cannot dedicate time to extensive tuning.
 
@@ -278,9 +273,9 @@ PKBoost features experimental drift detection that monitors model vulnerabilitie
 
 ---
 
-## 🎯 When to Use PKBoost
+## When to Use PKBoost
 
-### ✅ Good fit:
+### Good fit:
 - Binary classification (0/1 labels)
 - Multi-class classification (3+ classes via One-vs-Rest)
 - Regression tasks (continuous targets)
@@ -288,7 +283,7 @@ PKBoost features experimental drift detection that monitors model vulnerabilitie
 - Fraud detection, medical diagnosis, anomaly detection
 - Seeking good results without hyperparameter tuning
 
-### ❌ Not suitable for:
+### Not suitable for:
 - Perfectly balanced datasets (use XGBoost, it's faster)
 - Datasets with fewer than 1,000 samples (too small for meaningful results)
 
@@ -300,7 +295,7 @@ PKBoost features experimental drift detection that monitors model vulnerabilitie
 
 ---
 
-## 🔬 How It Works
+## How It Works
 
 **Traditional gradient boosting struggles with extreme imbalance because:**
 - Gradient-based splits favor the majority class. More samples lead to stronger gradients.
@@ -341,7 +336,7 @@ See `src/` for full implementation. Binary classification only.
 
 ---
 
-## ⚡ Performance
+## Performance
 
 **Training Time (Credit Card, 170K samples):**
 
@@ -359,7 +354,7 @@ PKBoost prioritizes accuracy over speed. For production inference, all three hav
 
 ---
 
-## 📋 Requirements
+## Requirements
 
 - Rust 1.70+ (2021 edition)
 - 8GB+ RAM for large datasets (>100K samples)
@@ -373,7 +368,7 @@ See [Python Bindings Guide](docs/PYTHON_BINDINGS.md) for full API documentation.
 
 ---
 
-## 🧪 Running Benchmarks & Tests
+## Running Benchmarks & Tests
 
 **Install Rust:**
 ```bash
@@ -413,16 +408,16 @@ cargo build --release --jobs 1  # Limit parallel compilation
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Open for contributions! Fork & PR: Focus on extensions, optimizations, or new tests. Issues welcome for bugs or dataset requests.
 
-**License:** GNU License – Free for commercial use.  
+**License:** GPL v3 License 
 **Contact:** kharatpushp16@outlook.com
 
 ---
 
-## 📚 Citation
+## Citation
 
 If you use PKBoost in your research, please cite:
 
@@ -437,7 +432,7 @@ If you use PKBoost in your research, please cite:
 
 ---
 
-## 📖 Further Reading
+## Further Reading
 
 [Rust ML Ecosystem](https://www.arewelearningyet.com/)
 
