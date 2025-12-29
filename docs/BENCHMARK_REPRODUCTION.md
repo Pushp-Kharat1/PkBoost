@@ -2,7 +2,7 @@
 
 Complete guide for reproducing all benchmarks from the PKBoost paper, including standard performance comparisons and drift resilience tests.
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Quick Start (5 minutes)](#quick-start-5-minutes)
 - [Full Reproduction (1-2 hours)](#full-reproduction-1-2-hours)

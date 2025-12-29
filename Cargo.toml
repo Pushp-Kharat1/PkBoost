@@ -1,6 +1,6 @@
 [package]
 name = "pkboost"
-version = "2.1.1"
+version = "2.1.2"
 edition = "2021"
 authors = ["Pushp Kharat <kharatpushp16@outlook.com>"]
 description = "Shannon-guided gradient boosting for extreme class imbalance with adaptive drift detection. Outperforms XGBoost/LightGBM on imbalanced data."
