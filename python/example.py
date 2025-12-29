@@ -9,8 +9,8 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 
 # Generate imbalanced dataset
 X, y = make_classification(
-    n_samples=1000000,
-    n_features=50,
+    n_samples=10000,
+    n_features=23,
     n_informative=15,
     n_redundant=5,
     weights=[0.90, 0.10],

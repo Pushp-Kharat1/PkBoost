@@ -391,7 +391,7 @@ Datasets sourced from UCI/ML.
 
 ---
 
-## 🛠️ Common Issues
+## Common Issues
 
 **"error: linker cc not found"**
 - Ubuntu/Debian: `sudo apt install build-essential`

@@ -2,6 +2,27 @@
 name = "pkboost"
 version = "2.1.1"
 edition = "2021"
+authors = ["Pushp Kharat <kharatpushp16@outlook.com>"]
+description = "Shannon-guided gradient boosting for extreme class imbalance with adaptive drift detection. Outperforms XGBoost/LightGBM on imbalanced data."
+license = "GPL-3.0"
+repository = "https://github.com/Pushp-Kharat1/pkboost"
+homepage = "https://github.com/Pushp-Kharat1/pkboost"
+documentation = "https://docs.rs/pkboost"
+readme = "README.md"
+keywords = ["machine-learning", "gradient-boosting", "classification", "imbalanced-data", "drift-detection"]
+categories = ["science", "algorithms"]
+rust-version = "1.70"
+exclude = [
+    "data/*",
+    "raw_data/*",
+    "temp/*",
+    "benchmark results/*",
+    "DryBeanDataset/*",
+    "python/*",
+    "diagrams/*",
+    "*.csv",
+    "target/*"
+]
 
 [dependencies]
 rand = "0.8"

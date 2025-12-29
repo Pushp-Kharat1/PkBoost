@@ -637,8 +637,11 @@ fn find_best_split_cached_optimized(
         return HistSplitResult::default();
     }
 
-    // Use entropy only for shallow splits where it matters most
-    let use_entropy = depth < 3 && precomputed.parent_entropy > 0.3;
+    // ADAPTIVE SHANNON MODE:
+    // Only pay the cost of Information Gain calculation when the node has "high" entropy.
+    // For imbalanced data (p=0.2%), entropy is ~0.02, so we set threshold to 0.01 to capture it.
+    // Deep nodes often become pure (entropy -> 0), naturally disabling this path for speed.
+    let use_entropy = precomputed.parent_entropy > 0.01;
     let adaptive_weight = if use_entropy {
         params.mi_weight * (-0.15 * depth as f64).exp()
     } else {

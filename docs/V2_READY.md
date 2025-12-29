@@ -1,4 +1,4 @@
-# ✅ PKBoost v2.0 - Ready for GitHub Push!
+# ✅ PKBoost v2.1.1 - Ready for GitHub Push!
 
 ## Repository
 **https://github.com/Pushp-Kharat1/PkBoost**
@@ -9,17 +9,22 @@
 - ✅ Zero compiler warnings in lib
 - ✅ All dead code warnings fixed
 - ✅ Clean compilation
-- ✅ Production-ready
+- ✅ Production-ready (Python 3.14 support)
 
 ### Documentation (6 Essential Files)
-1. ✅ **README.md** - Updated with v2.0 highlights
-2. ✅ **CHANGELOG_V2.md** - Complete v2.0 changes
+1. ✅ **README.md** - Updated with v2.1 highlights
+2. ✅ **CHANGELOG_V2.md** - Complete changes
 3. ✅ **FEATURES.md** - 45 features documented
 4. ✅ **MULTICLASS.md** - Multi-class usage guide
 5. ✅ **SHANNON_ANALYSIS.md** - Entropy impact study
 6. ✅ **DRYBEAN_DRIFT_RESULTS.md** - Drift resilience analysis
 
 ### Key Achievements
+
+#### Performance (v2.1.1)
+- **4x Faster Training**: 37s vs 150s baseline on 170k samples
+- **SimSIMD Integrated**: Use `target-cpu=native` for AVX2/FMA3 accel
+- **Auto-Tuner**: Imbalance-adaptive hyperparameter selection
 
 #### Multi-Class Classification
 - **92.36% accuracy** on Dry Bean (7 classes, naturally imbalanced)
@@ -38,29 +43,17 @@
 - Selective metamorphosis (retrain only drifted partitions)
 - SimSIMD integration for SIMD acceleration
 
-#### Performance
-- Core model: **32-46% faster** (loop unrolling, smart parallelism)
-- Zero configuration: Auto-tuning out of the box
-- 45 production features
-
 ## Quick Push Commands
 
 ```bash
-cd "c:\Users\asus\OneDrive - Value Score Business Solutions LLP\Desktop\PkBoost genesis rust"
+cd "c:\rust\PKBoost"
 
-# Initialize and commit
-git init
+# Commit changes
 git add .
-git commit -m "PKBoost v2.0: Multi-Class + HAB + Drift Resilience"
+git commit -m "PKBoost v2.1.1: 4x Speedup + Python 3.14 Support"
 
 # Push to your repo
-git remote add origin https://github.com/Pushp-Kharat1/PkBoost.git
-git branch -M main
-git push -u origin main --force
-
-# Tag release
-git tag -a v2.0.0 -m "PKBoost v2.0.0"
-git push origin v2.0.0
+git push -u origin main
 ```
 
 ## Benchmark Summary
@@ -68,7 +61,7 @@ git push origin v2.0.0
 | Dataset | Classes | PKBoost | XGBoost | LightGBM | Winner |
 |---------|---------|---------|---------|----------|--------|
 | **Dry Bean** | 7 | 92.36% | 92.25% | 92.36% | **PKBoost (Macro-F1: 0.9360)** |
-| **Credit Card** | 2 | 87.8% PR-AUC | 74.5% | 79.3% | **PKBoost** |
+| **Credit Card** | 2 | 83.6% PR-AUC | 74.5% | 79.3% | **PKBoost** |
 | **Drift (Dry Bean)** | 7 | -0.43% | -0.91% | -0.55% | **PKBoost (2.1x better)** |
 
 ## What's Included

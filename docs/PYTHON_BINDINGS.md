@@ -6,11 +6,17 @@ Python interface for PKBoost - gradient boosting with adaptive drift detection f
 
 ```bash
 # From local wheel (development)
-pip install target/wheels/pkboost-0.1.0-cp313-cp313-win_amd64.whl --force-reinstall
+pip install target/wheels/pkboost-2.1.1-cp314-cp314-win_amd64.whl --force-reinstall
 
 # From PyPI 
 pip install pkboost
 ```
+
+## Comparisons with XGBoost/LightGBM
+
+| Dataset | Imbalance | PKBoost PR-AUC | XGBoost PR-AUC | Speed (Samples/s) |
+|---------|-----------|----------------|----------------|-------------------|
+| Credit Card | 0.2% | 83.6% | 74.5% | ~2.75M |
 
 ## Quick Start
 
