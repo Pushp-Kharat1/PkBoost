@@ -338,19 +338,18 @@ See `src/` for full implementation. Binary classification only.
 
 ## Performance
 
-**Training Time (Credit Card, 170K samples):**
+**Training Time (Credit Card Fraud, ~57K samples test):**
 
-- **PKBoost:** ~45s with auto-tuning → 87.8% PR-AUC
-- **XGBoost:** ~12s with defaults → 74.5% PR-AUC
-- **XGBoost:** ~12s × 50 trials = 10 minutes tuned → ~87% PR-AUC (estimated)
+| Model     | Train Time | PR-AUC  | Notes                    |
+|-----------|------------|---------|--------------------------|
+| **PKBoost**   | **~16s**       | **87.3%**   | Auto-tuned, zero config  |
+| LightGBM  | ~20s       | 87.6%   | With class balancing     |
+| XGBoost   | ~1.5s      | 87.1%   | With scale_pos_weight    |
 
-### The Trade-off:
-- **PKBoost:** 45 seconds, zero human time
-- **XGBoost:** 10+ minutes compute + 2 hours human tuning time
-
-**Choose your bottleneck:** compute time or engineering time.
-
-PKBoost prioritizes accuracy over speed. For production inference, all three have similar prediction latency of around 1ms per sample.
+### Performance Highlights:
+- **Comparable Speed:** PKBoost now matches or exceeds LightGBM training speed
+- **Zero Configuration:** Auto-tuning included in training time—no manual hyperparameter search needed
+- **Production Ready:** All three libraries have similar prediction latency (~1ms per sample)
 
 ---
 
