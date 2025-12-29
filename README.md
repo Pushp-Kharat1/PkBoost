@@ -413,8 +413,16 @@ cargo build --release --jobs 1  # Limit parallel compilation
 
 Open for contributions! Fork & PR: Focus on extensions, optimizations, or new tests. Issues welcome for bugs or dataset requests.
 
-**License:** GPL v3 License 
 **Contact:** kharatpushp16@outlook.com
+
+## License
+
+PKBoost is dual-licensed under:
+
+- GNU General Public License v3.0 or later (GPL-3.0-or-later)
+- Apache License, Version 2.0
+
+You may choose either license when using this software.
 
 ---
 
