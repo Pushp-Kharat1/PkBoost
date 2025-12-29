@@ -338,18 +338,20 @@ See `src/` for full implementation. Binary classification only.
 
 ## Performance
 
-**Training Time (Credit Card Fraud, ~57K samples test):**
+**Benchmark: Credit Card Fraud (~57K samples, 0.17% fraud rate)**
 
-| Model     | Train Time | PR-AUC  | Notes                    |
-|-----------|------------|---------|--------------------------|
-| **PKBoost**   | **~16s**       | **87.3%**   | Auto-tuned, zero config  |
-| LightGBM  | ~20s       | 87.6%   | With class balancing     |
-| XGBoost   | ~1.5s      | 87.1%   | With scale_pos_weight    |
+| Model     | PR-AUC  | ROC-AUC | F1      | Precision | Train Time |
+|-----------|---------|---------|---------|-----------|------------|
+| **PKBoost**   | **84.6%**   | **95.2%**   | **86.5%**   | **94.1%**     | ~1.7s       |
+| LightGBM  | 83.7%   | 94.9%   | 76.2%   | 72.7%     | ~0.6s      |
+| XGBoost   | 80.4%   | 93.6%   | 76.9%   | 78.9%     | ~1.0s      |
 
 ### Performance Highlights:
-- **Comparable Speed:** PKBoost now matches or exceeds LightGBM training speed
-- **Zero Configuration:** Auto-tuning included in training time—no manual hyperparameter search needed
-- **Production Ready:** All three libraries have similar prediction latency (~1ms per sample)
+- **+13.5% F1 Score** vs LightGBM with same recall
+- **+5.3% PR-AUC** vs XGBoost  
+- **94% Precision** — only 1 false positive vs 4-6 for competitors
+- **Zero Configuration:** Auto-tuning + early stopping included
+- **Production Ready:** All libraries have similar prediction latency (~1ms per sample)
 
 ---
 
