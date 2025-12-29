@@ -208,7 +208,14 @@ Include:
 
 ## License
 
-By contributing to PKBoost, you agree that your contributions will be licensed under the GPL-3.0 License.
+By contributing to PKBoost, you agree that your contributions may be
+licensed under the terms of:
+
+- GNU General Public License v3.0 or later (GPL-3.0-or-later), OR
+- Apache License, Version 2.0
+
+This allows PKBoost to remain dual-licensed.
+
 
 ---
 
