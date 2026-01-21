@@ -25,7 +25,7 @@ impl TransposedData {
         let transposed = binned.t();
         let features = Array2::from_shape_vec(
             (n_features, n_samples),
-            transposed.to_standard_layout().to_owned(),
+            transposed.iter().cloned().collect(),
         )
         .unwrap();
 
