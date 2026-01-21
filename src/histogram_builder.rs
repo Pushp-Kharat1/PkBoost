@@ -1,4 +1,4 @@
-use crate::adaptive_parallel::{adaptive_par_map, ParallelComplexity};
+use ndarray::{Array2, ArrayView2, Axis};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -52,26 +52,23 @@ impl OptimizedHistogramBuilder {
         feature_values[mid]
     }
 
-    pub fn fit(&mut self, x: &[Vec<f64>]) -> &mut Self {
+    /// Fit the histogram builder on input data (ArrayView2 - zero-copy from Python)
+    pub fn fit(&mut self, x: ArrayView2<'_, f64>) -> &mut Self {
         if x.is_empty() {
             return self;
         }
-        let n_features = x[0].len();
+        let n_features = x.ncols();
 
         // Use Rayon's into_par_iter for parallel feature binning
         let results: Vec<(Vec<f64>, usize, f64)> = (0..n_features)
             .into_par_iter()
             .map(|feature_idx| {
-                let mut valid_values: Vec<f64> = x
+                // Get column view and extract valid (non-NaN) values
+                let column = x.column(feature_idx);
+                let mut valid_values: Vec<f64> = column
                     .iter()
-                    .filter_map(|row| {
-                        let val = row[feature_idx];
-                        if !val.is_nan() {
-                            Some(val)
-                        } else {
-                            None
-                        }
-                    })
+                    .filter(|&&val| !val.is_nan())
+                    .cloned()
                     .collect();
 
                 if valid_values.is_empty() {
@@ -86,7 +83,7 @@ impl OptimizedHistogramBuilder {
                 let edges = if valid_values.len() <= self.max_bins {
                     valid_values
                 } else {
-                    self.create_adaptive_bins(&valid_values)
+                    Self::create_adaptive_bins_static(&valid_values, self.max_bins)
                 };
 
                 (edges.clone(), edges.len(), median)
@@ -104,6 +101,7 @@ impl OptimizedHistogramBuilder {
     //  OPTIMIZATION 3: Radix sort for f64 (O(n) instead of O(n log n))
     // WHY: Your data is already binned to 32 values. Radix exploits this.
     #[inline]
+    #[allow(dead_code)]
     fn radix_sort_f64(arr: &mut [f64]) {
         if arr.len() < 64 {
             // Insertion sort for tiny arrays (cache-friendly)
@@ -175,12 +173,53 @@ impl OptimizedHistogramBuilder {
         bins
     }
 
-    pub fn transform(&self, x: &[Vec<f64>]) -> Vec<Vec<i32>> {
-        adaptive_par_map(x, ParallelComplexity::Medium, |row| self.transform_row(row))
+    /// Transform input data to binned representation (ArrayView2 -> Array2<i16>)
+    /// This is zero-copy on input, returns owned binned data
+    pub fn transform(&self, x: ArrayView2<'_, f64>) -> Array2<i16> {
+        let n_samples = x.nrows();
+        let n_features = x.ncols();
+
+        if n_samples == 0 || n_features == 0 {
+            return Array2::zeros((0, 0));
+        }
+
+        // Pre-allocate output array
+        let mut result = Array2::<i16>::zeros((n_samples, n_features));
+
+        // Process in parallel by rows using Rayon
+        result
+            .axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .zip(x.axis_iter(Axis(0)).into_par_iter())
+            .for_each(|(mut out_row, in_row)| {
+                for (feature_idx, (&value, out_val)) in
+                    in_row.iter().zip(out_row.iter_mut()).enumerate()
+                {
+                    let imputed_value = if value.is_nan() {
+                        self.medians[feature_idx]
+                    } else {
+                        value
+                    };
+
+                    let edges = &self.bin_edges[feature_idx];
+                    let bin_idx = self.find_bin_fast(edges, imputed_value);
+                    let n_edges = self.n_bins_per_feature[feature_idx];
+
+                    let final_bin_idx = if n_edges > 0 {
+                        bin_idx.min(n_edges - 1)
+                    } else {
+                        0
+                    };
+                    *out_val = final_bin_idx as i16;
+                }
+            });
+
+        result
     }
 
+    /// Transform a single row (for incremental prediction)
     #[inline]
-    fn transform_row(&self, row: &[f64]) -> Vec<i32> {
+    pub fn transform_row(&self, row: &[f64]) -> Vec<i16> {
         row.iter()
             .enumerate()
             .map(|(feature_idx, &value)| {
@@ -199,21 +238,33 @@ impl OptimizedHistogramBuilder {
                 } else {
                     0
                 };
-                final_bin_idx as i32
+                final_bin_idx as i16
             })
             .collect()
     }
 
-    pub fn transform_batched(&self, x: &[Vec<f64>], batch_size: usize) -> Vec<Vec<i32>> {
+    /// Batched transform for memory-constrained environments
+    pub fn transform_batched(&self, x: ArrayView2<'_, f64>, batch_size: usize) -> Array2<i16> {
         let config = crate::adaptive_parallel::get_parallel_config();
+        let n_samples = x.nrows();
 
-        if config.memory_efficient_mode && x.len() > batch_size {
-            let mut results = Vec::with_capacity(x.len());
-            for chunk in x.chunks(batch_size) {
+        if config.memory_efficient_mode && n_samples > batch_size {
+            let n_features = x.ncols();
+            let mut result = Array2::<i16>::zeros((n_samples, n_features));
+
+            for (batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
+                let chunk_end = (chunk_start + batch_size).min(n_samples);
+                let chunk = x.slice(ndarray::s![chunk_start..chunk_end, ..]);
                 let batch_result = self.transform(chunk);
-                results.extend(batch_result);
+
+                // Copy batch result into final array
+                for (i, row) in batch_result.axis_iter(Axis(0)).enumerate() {
+                    for (j, &val) in row.iter().enumerate() {
+                        result[[chunk_start + i, j]] = val;
+                    }
+                }
             }
-            results
+            result
         } else {
             self.transform(x)
         }

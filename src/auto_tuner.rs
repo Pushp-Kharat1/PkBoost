@@ -1,5 +1,6 @@
 use crate::adaptive_parallel::get_parallel_config;
 use crate::model::OptimizedPKBoostShannon;
+use ndarray::ArrayView2;
 
 pub struct VulnerabilityCalibration {
     pub baseline_vulnerability: f64,
@@ -8,12 +9,15 @@ pub struct VulnerabilityCalibration {
 }
 
 impl VulnerabilityCalibration {
-    pub fn calibrate(
+    /// Calibrate using ArrayView2 (zero-copy from Python)
+    pub fn calibrate_view(
         model: &OptimizedPKBoostShannon,
-        x_val: &Vec<Vec<f64>>,
+        x_val: ArrayView2<'_, f64>,
         y_val: &[f64],
     ) -> Self {
         let preds = model.predict_proba(x_val).unwrap_or_default();
+        let preds_slice = preds.as_slice().unwrap_or(&[]);
+
         let pos_ratio = y_val.iter().sum::<f64>() / y_val.len() as f64;
         let pos_class_weight = if pos_ratio > 1e-9 {
             (1.0 / pos_ratio).min(1000.0)
@@ -22,7 +26,7 @@ impl VulnerabilityCalibration {
         };
 
         let mut vulnerabilities = Vec::new();
-        for (&pred, &true_y) in preds.iter().zip(y_val.iter()) {
+        for (&pred, &true_y) in preds_slice.iter().zip(y_val.iter()) {
             let confidence = (pred - 0.5).abs() * 2.0;
             let error = (true_y - pred).abs();
             let class_weight = if true_y > 0.5 { pos_class_weight } else { 1.0 };
@@ -94,9 +98,11 @@ pub fn auto_tune_principled(
 
     // Slight reduction for extreme imbalance (more careful fitting)
     if imbalance_level == "extreme" {
-        model.learning_rate *= 0.9;
+        model.n_estimators = 1200;
+        model.learning_rate = 0.025;
+        model.early_stopping_rounds = 80;
     }
-    model.learning_rate = model.learning_rate.clamp(0.03, 0.15);
+    model.learning_rate = model.learning_rate.clamp(0.01, 0.15);
 
     // MAX DEPTH: Shallow trees are faster and prevent overfitting
     // For imbalanced data, even shallower to avoid overfitting minority class
@@ -107,7 +113,8 @@ pub fn auto_tune_principled(
         ("standard", "extreme") => 4,
         ("standard", "high") => 5,
         ("standard", _) => 6,
-        ("complex", "extreme" | "high") => 5,
+        ("complex", "extreme") => 8,
+        ("complex", "high") => 7,
         ("complex", _) => 6,
         _ => 5,
     };
@@ -119,7 +126,7 @@ pub fn auto_tune_principled(
         "trivial" => base_trees.clamp(100, 500),
         "simple" => base_trees.clamp(200, 800),
         "standard" => base_trees.clamp(300, 1000),
-        "complex" => base_trees.clamp(400, 1000),
+        "complex" => base_trees.clamp(700, 2000),
         _ => base_trees.clamp(300, 1000),
     };
 
@@ -139,7 +146,7 @@ pub fn auto_tune_principled(
 
     // REGULARIZATION: Scale with features, stronger for imbalanced
     model.reg_lambda = match imbalance_level {
-        "extreme" => 0.15 * (n_features as f64).sqrt(),
+        "extreme" => 0.8 * (n_features as f64).sqrt(),
         "high" => 0.12 * (n_features as f64).sqrt(),
         _ => 0.10 * (n_features as f64).sqrt(),
     };
@@ -159,12 +166,14 @@ pub fn auto_tune_principled(
 
     // MI WEIGHT: Shannon entropy contribution
     model.mi_weight = match imbalance_level {
-        "balanced" | "moderate" => 0.3,
-        _ => 0.1,
+        "extreme" => 0.25,
+        "high" => 0.20,
+        "moderate" => 0.15,
+        _ => 0.05,
     };
 
     // HISTOGRAM BINS: 16 is 2x faster than 32 with minimal accuracy loss
-    model.histogram_bins = 16;
+    model.histogram_bins = 32;
 
     println!("\nDerived Parameters:");
     println!("• Learning Rate: {:.4}", model.learning_rate);

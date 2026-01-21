@@ -10,6 +10,7 @@ use crate::{
     optimized_data::TransposedData,
     tree::{OptimizedTreeShannon, TreeParams},
 };
+use ndarray::{Array1, ArrayView1, ArrayView2};
 use rand::prelude::*;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -129,9 +130,13 @@ impl PKBoostBuilder {
         self
     }
 
-    pub fn build_with_data(self, x: &Vec<Vec<f64>>, y: &[f64]) -> OptimizedPKBoostShannon {
+    pub fn build_with_data(
+        self,
+        x: ArrayView2<'_, f64>,
+        y: ArrayView1<'_, f64>,
+    ) -> OptimizedPKBoostShannon {
         if self.use_auto_params {
-            let stats = compute_data_stats(x, y);
+            let stats = compute_data_stats(x, y.as_slice().unwrap());
             let imbalance = (1.0 - stats.pos_ratio) / stats.pos_ratio.max(1e-6); // class weight
 
             println!("\nAuto-Parameter Selection :");
@@ -233,9 +238,9 @@ impl PKBoostBuilder {
     }
 }
 
-fn compute_data_stats(x: &Vec<Vec<f64>>, y: &[f64]) -> DataStats {
-    let n_rows = x.len();
-    let n_cols = if n_rows > 0 { x[0].len() } else { 0 };
+fn compute_data_stats(x: ArrayView2<'_, f64>, y: &[f64]) -> DataStats {
+    let n_rows = x.nrows();
+    let n_cols = x.ncols();
 
     let pos_count = y.iter().filter(|&&v| v > 0.5).count();
 
@@ -246,11 +251,12 @@ fn compute_data_stats(x: &Vec<Vec<f64>>, y: &[f64]) -> DataStats {
         let mut unique_vals = std::collections::HashSet::new();
         let mut col_missing = 0;
 
-        for row in x.iter() {
-            if row[col_idx].is_nan() {
+        for row_idx in 0..n_rows {
+            let val = x[[row_idx, col_idx]];
+            if val.is_nan() {
                 col_missing += 1;
             } else {
-                unique_vals.insert(row[col_idx].to_bits());
+                unique_vals.insert(val.to_bits());
             }
         }
 
@@ -304,7 +310,8 @@ fn is_neg_infinity(value: &f64) -> bool {
 }
 
 impl OptimizedPKBoostShannon {
-    pub fn auto(x: &Vec<Vec<f64>>, y: &[f64]) -> Self {
+    /// Create auto-tuned model from ArrayView2 (zero-copy from Python)
+    pub fn auto(x: ArrayView2<'_, f64>, y: ArrayView1<'_, f64>) -> Self {
         Self::builder().auto().build_with_data(x, y)
     }
 
@@ -320,22 +327,24 @@ impl OptimizedPKBoostShannon {
         self.auto_tuned
     }
 
-    // main training loop - standard gradient boosting with performance optimizations
+    /// Main training loop - standard gradient boosting with performance optimizations
+    /// Accepts ArrayView2 for zero-copy data transfer from Python
     pub fn fit(
         &mut self,
-        x: &Vec<Vec<f64>>,
-        y: &[f64],
-        eval_set: Option<(&Vec<Vec<f64>>, &[f64])>,
+        x: ArrayView2<'_, f64>,
+        y: ArrayView1<'_, f64>,
+        eval_set: Option<(ArrayView2<'_, f64>, ArrayView1<'_, f64>)>,
         verbose: bool,
     ) -> Result<(), String> {
         let fit_start_time = Instant::now();
-        let n_samples = x.len();
+        let n_samples = x.nrows();
         if n_samples == 0 {
             return Err("Input data is empty".to_string());
         }
-        let n_features = x[0].len();
+        let n_features = x.ncols();
+        let y_slice = y.as_slice().ok_or("y must be contiguous")?;
 
-        let pos_ratio = y.iter().sum::<f64>() / y.len() as f64;
+        let pos_ratio = y_slice.iter().sum::<f64>() / y_slice.len() as f64;
 
         if verbose {
             println!("=== PKBoost Training Started ===");
@@ -352,7 +361,7 @@ impl OptimizedPKBoostShannon {
             println!();
         }
 
-        self.base_score = self.loss_fn.init_score(y);
+        self.base_score = self.loss_fn.init_score(y_slice);
         let mut train_preds = vec![self.base_score; n_samples]; // raw predictions (log-odds)
 
         // bin continuous features into histograms for faster splitting
@@ -370,7 +379,7 @@ impl OptimizedPKBoostShannon {
         // 🔥 OPTIMIZATION: Transform ONCE and cache (biggest speedup!)
         // WHY: Eliminates 30-40% of runtime by avoiding repeated transforms
         let x_processed = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_rows(&x_processed);
+        let transposed_data = TransposedData::from_binned(x_processed);
         self.binned_data_cache = Some(transposed_data.clone());
         let transposed_data = self.binned_data_cache.as_ref().unwrap();
 
@@ -383,11 +392,9 @@ impl OptimizedPKBoostShannon {
             (None, None)
         };
 
-        let val_transposed = if let Some(ref x_val_proc) = x_val_processed {
-            Some(TransposedData::from_rows(x_val_proc))
-        } else {
-            None
-        };
+        let val_transposed = x_val_processed
+            .as_ref()
+            .map(|x_val_proc| TransposedData::from_binned_view(x_val_proc.view()));
 
         if verbose {
             println!("Histogram building complete. Starting boosting iterations...");
@@ -425,7 +432,7 @@ impl OptimizedPKBoostShannon {
             let t0 = Instant::now();
             let (grad, hess) =
                 self.loss_fn
-                    .gradient_hessian(y, &train_preds, self.scale_pos_weight);
+                    .gradient_hessian(y_slice, &train_preds, self.scale_pos_weight);
             time_grad_hess += t0.elapsed();
 
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
@@ -447,7 +454,7 @@ impl OptimizedPKBoostShannon {
             let t1 = Instant::now();
             tree.fit_optimized(
                 &transposed_data,
-                &y,
+                y_slice,
                 &grad,
                 &hess,
                 &sample_indices,
@@ -521,6 +528,7 @@ impl OptimizedPKBoostShannon {
             if let (Some(ref val_transposed_data), Some(ref mut val_preds_ref), Some((_, y_val))) =
                 (val_transposed.as_ref(), val_preds.as_mut(), eval_set)
             {
+                let y_val_slice = y_val.as_slice().unwrap();
                 let val_sample_indices: Vec<usize> = (0..val_transposed_data.n_samples).collect();
                 let val_tree_preds = tree.predict_batch(val_transposed_data, &val_sample_indices);
 
@@ -534,8 +542,8 @@ impl OptimizedPKBoostShannon {
                 // evaluate on validation set periodically (less frequent = faster)
                 if (iteration + 1) % 20 == 0 || iteration == 0 {
                     let val_probs = self.loss_fn.sigmoid(val_preds_ref);
-                    let val_roc = calculate_roc_auc(y_val, &val_probs);
-                    let val_pr = calculate_pr_auc(y_val, &val_probs); // PR-AUC better for imbalanced data
+                    let val_roc = calculate_roc_auc(y_val_slice, &val_probs);
+                    let val_pr = calculate_pr_auc(y_val_slice, &val_probs); // PR-AUC better for imbalanced data
 
                     // smooth metrics over last 3 evaluations to reduce noise
                     if self.metric_history.len() >= 3 {
@@ -612,15 +620,16 @@ impl OptimizedPKBoostShannon {
         Ok(())
     }
 
-    pub fn predict_proba(&self, x: &Vec<Vec<f64>>) -> Result<Vec<f64>, String> {
+    /// Predict probabilities from ArrayView2 (zero-copy from Python)
+    pub fn predict_proba(&self, x: ArrayView2<'_, f64>) -> Result<Array1<f64>, String> {
         if !self.fitted {
             return Err("Model not fitted".to_string());
         }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
         let x_proc = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_rows(&x_proc);
-        let n_samples = x_proc.len();
+        let transposed_data = TransposedData::from_binned(x_proc);
+        let n_samples = transposed_data.n_samples;
         let sample_indices: Vec<usize> = (0..n_samples).collect();
 
         let mut predictions = vec![self.base_score; n_samples];
@@ -635,20 +644,20 @@ impl OptimizedPKBoostShannon {
                 });
         }
 
-        Ok(self.loss_fn.sigmoid(&predictions))
+        Ok(Array1::from(self.loss_fn.sigmoid(&predictions)))
     }
 
     // OPTIMIZATION 5: Memory-mapped prediction for large datasets
-    pub fn predict_proba_chunked(&self, x: &Vec<Vec<f64>>) -> Result<Vec<f64>, String> {
+    pub fn predict_proba_chunked(&self, x: ArrayView2<'_, f64>) -> Result<Array1<f64>, String> {
         if !self.fitted {
             return Err("Model not fitted".to_string());
         }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
         let x_proc = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_rows(&x_proc);
+        let transposed_data = TransposedData::from_binned(x_proc);
 
-        let n_samples = x_proc.len();
+        let n_samples = transposed_data.n_samples;
         let mut predictions = vec![self.base_score; n_samples];
 
         // OPTIMIZATION: Process trees in chunks for better cache utilization
@@ -664,22 +673,22 @@ impl OptimizedPKBoostShannon {
             }
         }
 
-        Ok(self.loss_fn.sigmoid(&predictions))
+        Ok(Array1::from(self.loss_fn.sigmoid(&predictions)))
     }
 
     pub fn predict_proba_batch(
         &self,
-        x: &Vec<Vec<f64>>,
+        x: ArrayView2<'_, f64>,
         batch_size: usize,
-    ) -> Result<Vec<f64>, String> {
+    ) -> Result<Array1<f64>, String> {
         if !self.fitted {
             return Err("Model not fitted".to_string());
         }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
         let x_proc = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_rows(&x_proc);
-        let mut all_predictions = Vec::with_capacity(x_proc.len());
+        let transposed_data = TransposedData::from_binned(x_proc);
+        let mut all_predictions = Vec::with_capacity(transposed_data.n_samples);
 
         for batch_start in (0..transposed_data.n_samples).step_by(batch_size) {
             let batch_end = (batch_start + batch_size).min(transposed_data.n_samples);
@@ -702,7 +711,7 @@ impl OptimizedPKBoostShannon {
             all_predictions.extend(batch_preds);
         }
 
-        Ok(self.loss_fn.sigmoid(&all_predictions))
+        Ok(Array1::from(self.loss_fn.sigmoid(&all_predictions)))
     }
 
     // remove trees that depend heavily on dead features
@@ -739,9 +748,9 @@ impl Default for OptimizedPKBoostShannon {
 }
 
 pub fn quick_train(
-    x_train: &Vec<Vec<f64>>,
-    y_train: &[f64],
-    x_val: Option<(&Vec<Vec<f64>>, &[f64])>,
+    x_train: ArrayView2<'_, f64>,
+    y_train: ArrayView1<'_, f64>,
+    x_val: Option<(ArrayView2<'_, f64>, ArrayView1<'_, f64>)>,
     verbose: bool,
 ) -> Result<OptimizedPKBoostShannon, String> {
     let mut model = OptimizedPKBoostShannon::auto(x_train, y_train);
@@ -750,8 +759,8 @@ pub fn quick_train(
 }
 
 pub fn train_with_overrides(
-    x_train: &Vec<Vec<f64>>,
-    y_train: &[f64],
+    x_train: ArrayView2<'_, f64>,
+    y_train: ArrayView1<'_, f64>,
     max_depth: Option<usize>,
     learning_rate: Option<f64>,
     verbose: bool,

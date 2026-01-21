@@ -2,6 +2,7 @@
 // Divides feature space into specialized regions, each with its own model
 
 use crate::model::OptimizedPKBoostShannon;
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -46,11 +47,9 @@ pub struct PartitionedClassifier {
     #[allow(dead_code)]
     multi_specialists: Vec<Vec<OptimizedPKBoostShannon>>,
     fitted: bool,
-    // Drift tracking per partition
     partition_baseline_error: Vec<f64>,
     partition_error_ema: Vec<f64>,
     partition_sample_counts: Vec<usize>,
-    // Ensemble weighting
     specialist_weights: Vec<f64>,
     use_weighted_ensemble: bool,
 }
@@ -72,29 +71,28 @@ impl PartitionedClassifier {
         }
     }
 
-    // K-means clustering to partition feature space
-    fn kmeans_partition(&mut self, x: &[Vec<f64>], max_iters: usize) {
-        let n_features = x[0].len();
+    // K-means clustering using ArrayView2
+    fn kmeans_partition(&mut self, x: ArrayView2<'_, f64>, max_iters: usize) {
+        let n_features = x.ncols();
+        let n_samples = x.nrows();
         let k = self.config.n_partitions;
 
         // Initialize centroids randomly
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
-        let mut indices: Vec<usize> = (0..x.len()).collect();
+        let mut indices: Vec<usize> = (0..n_samples).collect();
         indices.shuffle(&mut rng);
 
-        self.centroids = indices[..k].iter().map(|&i| x[i].clone()).collect();
+        self.centroids = indices[..k].iter().map(|&i| x.row(i).to_vec()).collect();
 
         for _ in 0..max_iters {
-            // Assign samples to nearest centroid
-            let assignments = self.assign_to_partitions(x);
+            let assignments = self.assign_to_partitions_view(x);
 
-            // Update centroids
             let mut new_centroids = vec![vec![0.0; n_features]; k];
             let mut counts = vec![0; k];
 
-            for (sample, &partition) in x.iter().zip(assignments.iter()) {
-                for (j, &val) in sample.iter().enumerate() {
+            for (i, &partition) in assignments.iter().enumerate() {
+                for (j, &val) in x.row(i).iter().enumerate() {
                     new_centroids[partition][j] += val;
                 }
                 counts[partition] += 1;
@@ -112,33 +110,31 @@ impl PartitionedClassifier {
         }
     }
 
-    fn assign_to_partitions(&self, x: &[Vec<f64>]) -> Vec<usize> {
+    fn assign_to_partitions_view(&self, x: ArrayView2<'_, f64>) -> Vec<usize> {
         use simsimd::SpatialSimilarity;
 
-        // Pre-convert centroids to f32 once (avoid repeated allocations)
         let centroids_f32: Vec<Vec<f32>> = self
             .centroids
             .iter()
             .map(|c| c.iter().map(|&v| v as f32).collect())
             .collect();
 
-        // Use Rayon parallel iterator for SimSIMD distance computation
-        x.par_iter()
-            .map(|sample| {
-                let sample_f32: Vec<f32> = sample.iter().map(|&v| v as f32).collect();
+        (0..x.nrows())
+            .into_par_iter()
+            .map(|i| {
+                let sample_f32: Vec<f32> = x.row(i).iter().map(|&v| v as f32).collect();
 
-                // Use SimSIMD for fast distance computation (already SIMD-optimized)
                 let mut min_idx = 0;
                 let mut min_dist = f64::INFINITY;
 
-                for (i, centroid_f32) in centroids_f32.iter().enumerate() {
+                for (j, centroid_f32) in centroids_f32.iter().enumerate() {
                     let dist = f32::sqeuclidean(&sample_f32[..], &centroid_f32[..])
                         .map(|d| d as f64)
                         .unwrap_or(f64::INFINITY);
 
                     if dist < min_dist {
                         min_dist = dist;
-                        min_idx = i;
+                        min_idx = j;
                     }
                 }
 
@@ -147,7 +143,12 @@ impl PartitionedClassifier {
             .collect()
     }
 
-    pub fn partition_data(&mut self, x: &[Vec<f64>], _y: &[f64], verbose: bool) {
+    pub fn partition_data(
+        &mut self,
+        x: ArrayView2<'_, f64>,
+        _y: ArrayView1<'_, f64>,
+        verbose: bool,
+    ) {
         if verbose {
             println!(
                 "Partitioning data into {} regions...",
@@ -158,7 +159,7 @@ impl PartitionedClassifier {
         match self.config.partition_method {
             PartitionMethod::KMeans => self.kmeans_partition(x, 10),
             PartitionMethod::Random => {
-                let n_features = x[0].len();
+                let n_features = x.ncols();
                 use rand::Rng;
                 let mut rng = rand::thread_rng();
                 self.centroids = (0..self.config.n_partitions)
@@ -168,7 +169,7 @@ impl PartitionedClassifier {
         }
 
         if verbose {
-            let assignments = self.assign_to_partitions(x);
+            let assignments = self.assign_to_partitions_view(x);
             let mut counts = vec![0; self.config.n_partitions];
             for &p in &assignments {
                 counts[p] += 1;
@@ -179,8 +180,8 @@ impl PartitionedClassifier {
 
     pub fn train_specialists(
         &mut self,
-        x: &[Vec<f64>],
-        y: &[f64],
+        x: ArrayView2<'_, f64>,
+        y: ArrayView1<'_, f64>,
         verbose: bool,
     ) -> Result<(), String> {
         self.train_specialists_with_validation(x, y, None, verbose)
@@ -188,26 +189,27 @@ impl PartitionedClassifier {
 
     pub fn train_specialists_with_validation(
         &mut self,
-        x: &[Vec<f64>],
-        y: &[f64],
-        val_set: Option<(&[Vec<f64>], &[f64])>,
+        x: ArrayView2<'_, f64>,
+        y: ArrayView1<'_, f64>,
+        val_set: Option<(ArrayView2<'_, f64>, ArrayView1<'_, f64>)>,
         verbose: bool,
     ) -> Result<(), String> {
-        let assignments = self.assign_to_partitions(x);
+        let y_slice = y.as_slice().ok_or("y must be contiguous")?;
+        let assignments = self.assign_to_partitions_view(x);
 
         // Group samples by partition
-        let mut partition_data: HashMap<usize, (Vec<Vec<f64>>, Vec<f64>)> = HashMap::new();
+        let mut partition_data: HashMap<usize, (Vec<usize>, Vec<f64>)> = HashMap::new();
         for (i, &partition) in assignments.iter().enumerate() {
             partition_data
                 .entry(partition)
                 .or_insert_with(|| (Vec::new(), Vec::new()))
                 .0
-                .push(x[i].clone());
+                .push(i);
             partition_data
-                .entry(partition)
-                .or_insert_with(|| (Vec::new(), Vec::new()))
+                .get_mut(&partition)
+                .unwrap()
                 .1
-                .push(y[i]);
+                .push(y_slice[i]);
         }
 
         if verbose {
@@ -218,21 +220,27 @@ impl PartitionedClassifier {
         let specialists: Vec<_> = (0..self.config.n_partitions)
             .into_par_iter()
             .map(|partition_id| {
-                if let Some((x_part, y_part)) = partition_data.get(&partition_id) {
-                    if x_part.len() < 10 {
+                if let Some((indices, y_part)) = partition_data.get(&partition_id) {
+                    if indices.len() < 10 {
                         return Err(format!("Partition {} has insufficient data", partition_id));
                     }
 
-                    // Auto-tune specialist for imbalanced data
-                    let mut specialist = OptimizedPKBoostShannon::auto(x_part, y_part);
+                    // Build Array2 for this partition
+                    let n_features = x.ncols();
+                    let mut x_part = Array2::zeros((indices.len(), n_features));
+                    for (i, &idx) in indices.iter().enumerate() {
+                        x_part.row_mut(i).assign(&x.row(idx));
+                    }
+                    let y_arr = Array1::from(y_part.clone());
+
+                    let mut specialist = OptimizedPKBoostShannon::auto(x_part.view(), y_arr.view());
                     specialist.n_estimators = self.config.specialist_estimators;
                     specialist.max_depth = self.config.specialist_max_depth;
                     specialist.learning_rate = self.config.specialist_learning_rate;
                     specialist.early_stopping_rounds = 50;
-                    // OPTIMIZATION: Increase Shannon entropy weight for better minority class detection
-                    specialist.mi_weight = 0.3; // Higher than default 0.1
+                    specialist.mi_weight = 0.3;
 
-                    specialist.fit(x_part, y_part, None, false)?;
+                    specialist.fit(x_part.view(), y_arr.view(), None, false)?;
                     Ok(specialist)
                 } else {
                     Err(format!("No data for partition {}", partition_id))
@@ -245,31 +253,40 @@ impl PartitionedClassifier {
 
         // Calculate weights and baseline error
         if let Some((x_val, y_val)) = val_set {
-            let val_assignments = self.assign_to_partitions(x_val);
-            let mut val_partition_data: HashMap<usize, (Vec<Vec<f64>>, Vec<f64>)> = HashMap::new();
+            let y_val_slice = y_val.as_slice().unwrap();
+            let val_assignments = self.assign_to_partitions_view(x_val);
+            let mut val_partition_data: HashMap<usize, (Vec<usize>, Vec<f64>)> = HashMap::new();
 
             for (i, &partition) in val_assignments.iter().enumerate() {
                 val_partition_data
                     .entry(partition)
                     .or_insert_with(|| (Vec::new(), Vec::new()))
                     .0
-                    .push(x_val[i].clone());
+                    .push(i);
                 val_partition_data
-                    .entry(partition)
-                    .or_insert_with(|| (Vec::new(), Vec::new()))
+                    .get_mut(&partition)
+                    .unwrap()
                     .1
-                    .push(y_val[i]);
+                    .push(y_val_slice[i]);
             }
 
-            // Calculate PR-AUC based weights
             for partition_id in 0..self.config.n_partitions {
-                if let Some((x_part, y_part)) = val_partition_data.get(&partition_id) {
-                    if x_part.len() > 5 {
-                        if let Ok(probs) = self.specialists[partition_id].predict_proba(x_part) {
-                            let pr_auc = crate::metrics::calculate_pr_auc(y_part, &probs);
-                            self.specialist_weights[partition_id] = pr_auc.max(0.5); // Min weight 0.5
+                if let Some((indices, y_part)) = val_partition_data.get(&partition_id) {
+                    if indices.len() > 5 {
+                        let n_features = x_val.ncols();
+                        let mut x_part = Array2::zeros((indices.len(), n_features));
+                        for (i, &idx) in indices.iter().enumerate() {
+                            x_part.row_mut(i).assign(&x_val.row(idx));
+                        }
 
-                            let errors: Vec<f64> = probs
+                        if let Ok(probs) =
+                            self.specialists[partition_id].predict_proba(x_part.view())
+                        {
+                            let probs_slice = probs.as_slice().unwrap();
+                            let pr_auc = crate::metrics::calculate_pr_auc(y_part, probs_slice);
+                            self.specialist_weights[partition_id] = pr_auc.max(0.5);
+
+                            let errors: Vec<f64> = probs_slice
                                 .iter()
                                 .zip(y_part.iter())
                                 .map(|(&prob, &true_y)| {
@@ -298,11 +315,17 @@ impl PartitionedClassifier {
                 );
             }
         } else {
-            // No validation set - use training error
             for partition_id in 0..self.config.n_partitions {
-                if let Some((x_part, y_part)) = partition_data.get(&partition_id) {
-                    if let Ok(probs) = self.specialists[partition_id].predict_proba(x_part) {
-                        let errors: Vec<f64> = probs
+                if let Some((indices, y_part)) = partition_data.get(&partition_id) {
+                    let n_features = x.ncols();
+                    let mut x_part = Array2::zeros((indices.len(), n_features));
+                    for (i, &idx) in indices.iter().enumerate() {
+                        x_part.row_mut(i).assign(&x.row(idx));
+                    }
+
+                    if let Ok(probs) = self.specialists[partition_id].predict_proba(x_part.view()) {
+                        let probs_slice = probs.as_slice().unwrap();
+                        let errors: Vec<f64> = probs_slice
                             .iter()
                             .zip(y_part.iter())
                             .map(|(&prob, &true_y)| {
@@ -331,67 +354,28 @@ impl PartitionedClassifier {
         Ok(())
     }
 
-    pub fn predict_proba(&self, x: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
+    pub fn predict_proba(&self, x: ArrayView2<'_, f64>) -> Result<Array2<f64>, String> {
         if !self.fitted {
             return Err("Model not fitted".to_string());
         }
 
-        let assignments = self.assign_to_partitions(x);
+        let assignments = self.assign_to_partitions_view(x);
 
         let n_classes = match self.config.task_type {
             TaskType::Binary => 2,
             TaskType::MultiClass { n_classes } => n_classes,
         };
 
-        let mut results = vec![vec![0.0; n_classes]; x.len()];
+        let mut results = Array2::zeros((x.nrows(), n_classes));
 
-        // Weighted ensemble prediction with normalization
-        if self.use_weighted_ensemble {
-            for (i, &partition) in assignments.iter().enumerate() {
-                if partition < self.specialists.len() {
-                    let specialist = &self.specialists[partition];
-                    let sample = vec![x[i].clone()];
+        for (i, &partition) in assignments.iter().enumerate() {
+            if partition < self.specialists.len() {
+                let specialist = &self.specialists[partition];
+                let sample = x.row(i).insert_axis(ndarray::Axis(0));
 
-                    if let Ok(probs) = specialist.predict_proba(&sample) {
-                        // Use specialist prediction directly (no weighting distortion)
-                        results[i][1] = probs[0];
-                        results[i][0] = 1.0 - probs[0];
-                    }
-                }
-            }
-        } else {
-            // Original unweighted prediction
-            for (i, &partition) in assignments.iter().enumerate() {
-                if partition < self.specialists.len() {
-                    let specialist = &self.specialists[partition];
-                    let sample = vec![x[i].clone()];
-
-                    match self.config.task_type {
-                        TaskType::Binary => {
-                            let probs = specialist.predict_proba(&sample)?;
-                            results[i][1] = probs[0];
-                            results[i][0] = 1.0 - probs[0];
-                        }
-                        TaskType::MultiClass { n_classes } => {
-                            let probs = specialist.predict_proba(&sample)?;
-                            let sum: f64 = (0..n_classes)
-                                .map(|c| {
-                                    if c == 0 {
-                                        1.0 - probs[0]
-                                    } else {
-                                        probs[0] / (n_classes - 1) as f64
-                                    }
-                                })
-                                .sum();
-                            for c in 0..n_classes {
-                                results[i][c] = if c == 0 {
-                                    (1.0 - probs[0]) / sum
-                                } else {
-                                    (probs[0] / (n_classes - 1) as f64) / sum
-                                };
-                            }
-                        }
-                    }
+                if let Ok(probs) = specialist.predict_proba(sample.view()) {
+                    results[[i, 1]] = probs[0];
+                    results[[i, 0]] = 1.0 - probs[0];
                 }
             }
         }
@@ -399,10 +383,11 @@ impl PartitionedClassifier {
         Ok(results)
     }
 
-    pub fn predict(&self, x: &[Vec<f64>]) -> Result<Vec<usize>, String> {
+    pub fn predict(&self, x: ArrayView2<'_, f64>) -> Result<Array1<usize>, String> {
         let probs = self.predict_proba(x)?;
-        Ok(probs
-            .iter()
+        let predictions: Vec<usize> = probs
+            .rows()
+            .into_iter()
             .map(|p| {
                 p.iter()
                     .enumerate()
@@ -410,19 +395,19 @@ impl PartitionedClassifier {
                     .map(|(i, _)| i)
                     .unwrap_or(0)
             })
-            .collect())
+            .collect();
+        Ok(Array1::from(predictions))
     }
 
-    // Observe batch and detect drifted partitions
-    pub fn observe_batch(&mut self, x: &[Vec<f64>], y: &[f64]) -> Vec<usize> {
+    pub fn observe_batch(&mut self, x: ArrayView2<'_, f64>, y: ArrayView1<'_, f64>) -> Vec<usize> {
         if !self.fitted {
             return Vec::new();
         }
 
-        let assignments = self.assign_to_partitions(x);
+        let y_slice = y.as_slice().unwrap();
+        let assignments = self.assign_to_partitions_view(x);
         let mut drifted = Vec::new();
 
-        // Group by partition
         let mut partition_samples: std::collections::HashMap<usize, Vec<usize>> =
             std::collections::HashMap::new();
         for (i, &p) in assignments.iter().enumerate() {
@@ -434,11 +419,17 @@ impl PartitionedClassifier {
                 continue;
             }
 
-            let x_part: Vec<Vec<f64>> = indices.iter().map(|&i| x[i].clone()).collect();
-            let y_part: Vec<f64> = indices.iter().map(|&i| y[i]).collect();
+            let n_features = x.ncols();
+            let mut x_part = Array2::zeros((indices.len(), n_features));
+            let mut y_part = Vec::with_capacity(indices.len());
+            for (i, &idx) in indices.iter().enumerate() {
+                x_part.row_mut(i).assign(&x.row(idx));
+                y_part.push(y_slice[idx]);
+            }
 
-            if let Ok(probs) = self.specialists[partition_id].predict_proba(&x_part) {
-                let errors: Vec<f64> = probs
+            if let Ok(probs) = self.specialists[partition_id].predict_proba(x_part.view()) {
+                let probs_slice = probs.as_slice().unwrap();
+                let errors: Vec<f64> = probs_slice
                     .iter()
                     .zip(y_part.iter())
                     .map(|(&prob, &true_y)| {
@@ -451,13 +442,11 @@ impl PartitionedClassifier {
                     .collect();
                 let avg_error = errors.iter().sum::<f64>() / errors.len() as f64;
 
-                // Update EMA
                 let alpha = 0.1;
                 self.partition_error_ema[partition_id] =
                     alpha * avg_error + (1.0 - alpha) * self.partition_error_ema[partition_id];
                 self.partition_sample_counts[partition_id] += indices.len();
 
-                // Detect drift (error increased by 30%)
                 let baseline = self.partition_baseline_error[partition_id].max(0.01);
                 if self.partition_error_ema[partition_id] > baseline * 1.3 {
                     drifted.push(partition_id);
@@ -468,12 +457,11 @@ impl PartitionedClassifier {
         drifted
     }
 
-    // Retrain specific partitions
     pub fn metamorph_partitions(
         &mut self,
         partition_ids: &[usize],
-        buffer_x: &[Vec<f64>],
-        buffer_y: &[f64],
+        buffer_x: ArrayView2<'_, f64>,
+        buffer_y: ArrayView1<'_, f64>,
         verbose: bool,
     ) -> Result<(), String> {
         if verbose {
@@ -484,14 +472,14 @@ impl PartitionedClassifier {
             );
         }
 
-        let assignments = self.assign_to_partitions(buffer_x);
+        let buffer_y_slice = buffer_y.as_slice().ok_or("buffer_y must be contiguous")?;
+        let assignments = self.assign_to_partitions_view(buffer_x);
 
         for &partition_id in partition_ids {
             if partition_id >= self.specialists.len() {
                 continue;
             }
 
-            // Get samples for this partition
             let indices: Vec<usize> = assignments
                 .iter()
                 .enumerate()
@@ -510,31 +498,36 @@ impl PartitionedClassifier {
                 continue;
             }
 
-            let x_part: Vec<Vec<f64>> = indices.iter().map(|&i| buffer_x[i].clone()).collect();
-            let y_part: Vec<f64> = indices.iter().map(|&i| buffer_y[i]).collect();
+            let n_features = buffer_x.ncols();
+            let mut x_part = Array2::zeros((indices.len(), n_features));
+            let mut y_part = Vec::with_capacity(indices.len());
+            for (i, &idx) in indices.iter().enumerate() {
+                x_part.row_mut(i).assign(&buffer_x.row(idx));
+                y_part.push(buffer_y_slice[idx]);
+            }
+            let y_arr = Array1::from(y_part.clone());
 
             if verbose {
                 println!(
                     "  [TRAIN] Retraining partition {} on {} samples...",
                     partition_id,
-                    x_part.len()
+                    x_part.nrows()
                 );
             }
 
-            // Retrain specialist with auto-tuning
-            let mut new_specialist = OptimizedPKBoostShannon::auto(&x_part, &y_part);
+            let mut new_specialist = OptimizedPKBoostShannon::auto(x_part.view(), y_arr.view());
             new_specialist.n_estimators = self.config.specialist_estimators;
             new_specialist.max_depth = self.config.specialist_max_depth;
             new_specialist.learning_rate = self.config.specialist_learning_rate;
             new_specialist.early_stopping_rounds = 20;
-            new_specialist.mi_weight = 0.3; // Higher Shannon entropy weight
+            new_specialist.mi_weight = 0.3;
 
-            new_specialist.fit(&x_part, &y_part, None, false)?;
+            new_specialist.fit(x_part.view(), y_arr.view(), None, false)?;
             self.specialists[partition_id] = new_specialist;
 
-            // Reset drift tracking
-            if let Ok(probs) = self.specialists[partition_id].predict_proba(&x_part) {
-                let errors: Vec<f64> = probs
+            if let Ok(probs) = self.specialists[partition_id].predict_proba(x_part.view()) {
+                let probs_slice = probs.as_slice().unwrap();
+                let errors: Vec<f64> = probs_slice
                     .iter()
                     .zip(y_part.iter())
                     .map(|(&prob, &true_y)| {

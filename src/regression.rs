@@ -1,14 +1,15 @@
 // Regression support for PKBoost
 // Uses MSE loss with L2 regularization
 
-use rayon::prelude::*;
 use crate::{
     histogram_builder::OptimizedHistogramBuilder,
-    tree::{OptimizedTreeShannon, TreeParams},
-    optimized_data::TransposedData,
     huber_loss::HuberLoss,
     loss::PoissonLoss,
+    optimized_data::TransposedData,
+    tree::{OptimizedTreeShannon, TreeParams},
 };
+use ndarray::{Array1, ArrayView1, ArrayView2};
+use rayon::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RegressionLossType {
@@ -21,38 +22,48 @@ pub enum RegressionLossType {
 pub struct MSELoss;
 
 impl MSELoss {
-    pub fn new() -> Self { Self }
-    
+    pub fn new() -> Self {
+        Self
+    }
+
     pub fn gradient(&self, y_true: &[f64], y_pred: &[f64]) -> Vec<f64> {
-        y_pred.par_iter().zip(y_true.par_iter())
+        y_pred
+            .par_iter()
+            .zip(y_true.par_iter())
             .map(|(&pred, &true_y)| pred - true_y)
             .collect()
     }
-    
+
     pub fn hessian(&self, y_true: &[f64]) -> Vec<f64> {
         vec![1.0; y_true.len()]
     }
-    
+
     pub fn init_score(&self, y_true: &[f64]) -> f64 {
         y_true.iter().sum::<f64>() / y_true.len() as f64
     }
 }
 
 pub fn detect_outliers(y: &[f64]) -> f64 {
-    if y.len() < 4 { return 0.0; }
+    if y.len() < 4 {
+        return 0.0;
+    }
     let mut sorted = y.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let q1 = sorted[sorted.len() / 4];
     let q3 = sorted[3 * sorted.len() / 4];
     let iqr = q3 - q1;
-    if iqr < 1e-10 { return 0.0; }
+    if iqr < 1e-10 {
+        return 0.0;
+    }
     let lower = q1 - 1.5 * iqr;
     let upper = q3 + 1.5 * iqr;
     y.iter().filter(|&&v| v < lower || v > upper).count() as f64 / y.len() as f64
 }
 
 pub fn calculate_mad(y: &[f64]) -> f64 {
-    if y.is_empty() { return 1.0; }
+    if y.is_empty() {
+        return 1.0;
+    }
     let median = {
         let mut sorted = y.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -112,80 +123,96 @@ impl PKBoostRegressor {
             histogram_builder: None,
         }
     }
-    
-    pub fn auto(x: &Vec<Vec<f64>>, y: &[f64]) -> Self {
+
+    /// Auto-configure regressor from ArrayView2 (zero-copy from Python)
+    pub fn auto(x: ArrayView2<'_, f64>, y: ArrayView1<'_, f64>) -> Self {
         let mut model = Self::new();
-        let n_samples = x.len();
-        
+        let n_samples = x.nrows();
+        let n_features = x.ncols();
+        let y_slice = y.as_slice().unwrap();
+
         // Auto-select loss based on outliers
-        let outlier_ratio = detect_outliers(y);
+        let outlier_ratio = detect_outliers(y_slice);
         if outlier_ratio > 0.05 {
-            let delta = calculate_mad(y) * 1.35;
+            let delta = calculate_mad(y_slice) * 1.35;
             model.loss_type = RegressionLossType::Huber { delta };
             model.huber_loss = Some(HuberLoss::new(delta));
         }
-        
+
         model.learning_rate = if n_samples < 5000 { 0.1 } else { 0.05 };
-        model.max_depth = ((x[0].len() as f64).ln() as usize + 3).clamp(4, 8);
-        model.reg_lambda = (x[0].len() as f64).sqrt() * 0.1;
+        model.max_depth = ((n_features as f64).ln() as usize + 3).clamp(4, 8);
+        model.reg_lambda = (n_features as f64).sqrt() * 0.1;
         model.n_estimators = ((n_samples as f64).ln() as usize * 100).clamp(200, 2000);
-        
+
         model
     }
-    
+
     pub fn get_gradient(&self, y_true: &[f64], y_pred: &[f64]) -> Vec<f64> {
         match self.loss_type {
             RegressionLossType::MSE => self.loss_fn.gradient(y_true, y_pred),
             RegressionLossType::Huber { .. } => {
                 self.huber_loss.as_ref().unwrap().gradient(y_true, y_pred)
             }
-            RegressionLossType::Poisson => {
-                PoissonLoss::gradient_hessian(y_true, y_pred).0
-            }
+            RegressionLossType::Poisson => PoissonLoss::gradient_hessian(y_true, y_pred).0,
         }
     }
-    
+
     pub fn get_hessian(&self, y_true: &[f64], y_pred: &[f64]) -> Vec<f64> {
         match self.loss_type {
             RegressionLossType::MSE => self.loss_fn.hessian(y_true),
             RegressionLossType::Huber { .. } => {
                 self.huber_loss.as_ref().unwrap().hessian(y_true, y_pred)
             }
-            RegressionLossType::Poisson => {
-                PoissonLoss::gradient_hessian(y_true, y_pred).1
-            }
+            RegressionLossType::Poisson => PoissonLoss::gradient_hessian(y_true, y_pred).1,
         }
     }
-    
-    pub fn fit(&mut self, x: &Vec<Vec<f64>>, y: &[f64], eval_set: Option<(&Vec<Vec<f64>>, &[f64])>, verbose: bool) -> Result<(), String> {
-        let n_samples = x.len();
-        if n_samples == 0 { return Err("Empty data".to_string()); }
-        let n_features = x[0].len();
-        
-        self.base_score = self.loss_fn.init_score(y);
+
+    /// Fit using ArrayView2 for zero-copy data transfer
+    pub fn fit(
+        &mut self,
+        x: ArrayView2<'_, f64>,
+        y: ArrayView1<'_, f64>,
+        eval_set: Option<(ArrayView2<'_, f64>, ArrayView1<'_, f64>)>,
+        verbose: bool,
+    ) -> Result<(), String> {
+        let n_samples = x.nrows();
+        if n_samples == 0 {
+            return Err("Empty data".to_string());
+        }
+        let n_features = x.ncols();
+        let y_slice = y.as_slice().ok_or("y must be contiguous")?;
+
+        self.base_score = self.loss_fn.init_score(y_slice);
         let mut train_preds = vec![self.base_score; n_samples];
-        
+
         if self.histogram_builder.is_none() {
             let mut hb = OptimizedHistogramBuilder::new(self.histogram_bins);
             hb.fit(x);
             self.histogram_builder = Some(hb);
         }
-        
+
         let hb = self.histogram_builder.as_ref().unwrap();
         let x_proc = hb.transform(x);
-        let transposed = TransposedData::from_rows(&x_proc);
-        
+        let transposed = TransposedData::from_binned(x_proc);
+
         let (x_val_proc, mut val_preds) = if let Some((xv, yv)) = eval_set {
-            (Some(hb.transform(xv)), Some(vec![self.base_score; yv.len()]))
-        } else { (None, None) };
-        
-        let val_trans = x_val_proc.as_ref().map(|xv| TransposedData::from_rows(xv));
-        
+            (
+                Some(hb.transform(xv)),
+                Some(vec![self.base_score; yv.len()]),
+            )
+        } else {
+            (None, None)
+        };
+
+        let val_trans = x_val_proc
+            .as_ref()
+            .map(|xv| TransposedData::from_binned_view(xv.view()));
+
         if verbose {
             println!("=== PKBoost Regressor Training ===");
             println!("Samples: {}, Features: {}", n_samples, n_features);
         }
-        
+
         for iter in 0..self.n_estimators {
             let mut rng = rand::thread_rng();
             let sample_size = (self.subsample * n_samples as f64) as usize;
@@ -193,127 +220,168 @@ impl PKBoostRegressor {
             use rand::seq::SliceRandom;
             sample_indices.shuffle(&mut rng);
             sample_indices.truncate(sample_size);
-            
+
             let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
             let mut feature_indices: Vec<usize> = (0..n_features).collect();
             feature_indices.shuffle(&mut rng);
             feature_indices.truncate(feature_size);
-            
-            let grad = self.get_gradient(y, &train_preds);
-            let hess = self.get_hessian(y, &train_preds);
-            
+
+            let grad = self.get_gradient(y_slice, &train_preds);
+            let hess = self.get_hessian(y_slice, &train_preds);
+
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
             let params = TreeParams {
                 min_samples_split: self.min_samples_split,
                 min_child_weight: self.min_child_weight,
                 reg_lambda: self.reg_lambda,
                 gamma: self.gamma,
-                mi_weight: 0.3,  // Use variance reduction for regression
-                n_bins_per_feature: feature_indices.iter().map(|&i| hb.n_bins_per_feature[i]).collect(),
+                mi_weight: 0.3, // Use variance reduction for regression
+                n_bins_per_feature: feature_indices
+                    .iter()
+                    .map(|&i| hb.n_bins_per_feature[i])
+                    .collect(),
                 feature_elimination_threshold: 0.01,
             };
-            
-            tree.fit_optimized(&transposed, y, &grad, &hess, &sample_indices, &feature_indices, &params);
-            
-            let tree_preds: Vec<f64> = (0..n_samples).into_par_iter()
+
+            tree.fit_optimized(
+                &transposed,
+                y_slice,
+                &grad,
+                &hess,
+                &sample_indices,
+                &feature_indices,
+                &params,
+            );
+
+            let tree_preds: Vec<f64> = (0..n_samples)
+                .into_par_iter()
                 .map(|i| tree.predict_from_transposed(&transposed, i))
                 .collect();
-            
-            train_preds.par_iter_mut().zip(tree_preds.par_iter())
+
+            train_preds
+                .par_iter_mut()
+                .zip(tree_preds.par_iter())
                 .for_each(|(p, &tp)| *p += self.learning_rate * tp);
-            
-            if let (Some(ref vt), Some(ref mut vp), Some((_, yv))) = (val_trans.as_ref(), val_preds.as_mut(), eval_set) {
-                let val_tree_preds: Vec<f64> = (0..vt.n_samples).into_par_iter()
+
+            if let (Some(ref vt), Some(ref mut vp), Some((_, yv))) =
+                (val_trans.as_ref(), val_preds.as_mut(), eval_set)
+            {
+                let yv_slice = yv.as_slice().unwrap();
+                let val_tree_preds: Vec<f64> = (0..vt.n_samples)
+                    .into_par_iter()
                     .map(|i| tree.predict_from_transposed(vt, i))
                     .collect();
-                
-                vp.par_iter_mut().zip(val_tree_preds.par_iter())
+
+                vp.par_iter_mut()
+                    .zip(val_tree_preds.par_iter())
                     .for_each(|(p, &tp)| *p += self.learning_rate * tp);
-                
+
                 if (iter + 1) % 10 == 0 {
-                    let mse: f64 = vp.iter().zip(yv.iter())
+                    let mse: f64 = vp
+                        .iter()
+                        .zip(yv_slice.iter())
                         .map(|(p, y)| (p - y).powi(2))
-                        .sum::<f64>() / yv.len() as f64;
+                        .sum::<f64>()
+                        / yv_slice.len() as f64;
                     let rmse = mse.sqrt();
-                    
+
                     if verbose && (iter + 1) % 50 == 0 {
                         println!("Iter {}: RMSE = {:.4}", iter + 1, rmse);
                     }
-                    
+
                     if rmse < self.best_score {
                         self.best_score = rmse;
                         self.best_iteration = iter;
                     }
-                    
+
                     if iter - self.best_iteration >= self.early_stopping_rounds {
-                        if verbose { println!("Early stopping at iter {}", iter + 1); }
+                        if verbose {
+                            println!("Early stopping at iter {}", iter + 1);
+                        }
                         break;
                     }
                 }
             } else {
                 self.best_iteration = iter;
             }
-            
+
             self.trees.push(tree);
         }
-        
+
         self.fitted = true;
-        
+
         if eval_set.is_some() {
             self.trees.truncate(self.best_iteration + 1);
         }
-        
-        let final_train_rmse = calculate_rmse(y, &train_preds);
-        
+
+        let final_train_rmse = calculate_rmse(y_slice, &train_preds);
+
         if verbose {
             if eval_set.is_some() {
-                println!("Training complete. Trees: {}, Best Val RMSE: {:.4}, Train RMSE: {:.4}", 
-                    self.trees.len(), self.best_score, final_train_rmse);
+                println!(
+                    "Training complete. Trees: {}, Best Val RMSE: {:.4}, Train RMSE: {:.4}",
+                    self.trees.len(),
+                    self.best_score,
+                    final_train_rmse
+                );
             } else {
-                println!("Training complete. Trees: {}, Train RMSE: {:.4}", 
-                    self.trees.len(), final_train_rmse);
+                println!(
+                    "Training complete. Trees: {}, Train RMSE: {:.4}",
+                    self.trees.len(),
+                    final_train_rmse
+                );
             }
         }
-        
+
         Ok(())
     }
-    
-    pub fn predict(&self, x: &Vec<Vec<f64>>) -> Result<Vec<f64>, String> {
-        if !self.fitted { return Err("Model not fitted".to_string()); }
-        
+
+    /// Predict using ArrayView2 (zero-copy from Python)
+    pub fn predict(&self, x: ArrayView2<'_, f64>) -> Result<Array1<f64>, String> {
+        if !self.fitted {
+            return Err("Model not fitted".to_string());
+        }
+
         let hb = self.histogram_builder.as_ref().unwrap();
         let x_proc = hb.transform(x);
-        let transposed = TransposedData::from_rows(&x_proc);
-        
-        let mut preds = vec![self.base_score; x_proc.len()];
-        
+        let transposed = TransposedData::from_binned(x_proc);
+
+        let mut preds = vec![self.base_score; transposed.n_samples];
+
         for tree in &self.trees {
-            preds.par_iter_mut().enumerate()
-                .for_each(|(i, p)| *p += self.learning_rate * tree.predict_from_transposed(&transposed, i));
+            preds.par_iter_mut().enumerate().for_each(|(i, p)| {
+                *p += self.learning_rate * tree.predict_from_transposed(&transposed, i)
+            });
         }
-        
+
         // Apply log-link transformation for Poisson
         if matches!(self.loss_type, RegressionLossType::Poisson) {
             preds.par_iter_mut().for_each(|p| *p = p.exp().min(1e15));
         }
-        
-        Ok(preds)
+
+        Ok(Array1::from(preds))
     }
-    
-    pub fn predict_with_uncertainty(&self, x: &Vec<Vec<f64>>) -> Result<(Vec<f64>, Vec<f64>), String> {
-        if !self.fitted { return Err("Model not fitted".to_string()); }
-        
+
+    pub fn predict_with_uncertainty(
+        &self,
+        x: ArrayView2<'_, f64>,
+    ) -> Result<(Array1<f64>, Array1<f64>), String> {
+        if !self.fitted {
+            return Err("Model not fitted".to_string());
+        }
+
         let hb = self.histogram_builder.as_ref().unwrap();
         let x_proc = hb.transform(x);
-        let transposed = TransposedData::from_rows(&x_proc);
-        let n_samples = x_proc.len();
-        
-        let mut cumulative_preds: Vec<Vec<f64>> = vec![Vec::with_capacity(self.trees.len()); n_samples];
-        
+        let transposed = TransposedData::from_binned(x_proc);
+        let n_samples = transposed.n_samples;
+
+        let mut cumulative_preds: Vec<Vec<f64>> =
+            vec![Vec::with_capacity(self.trees.len()); n_samples];
+
         for preds in &mut cumulative_preds {
             preds.push(self.base_score);
         }
-        
+
         for tree in &self.trees {
             for sample_idx in 0..n_samples {
                 let tree_pred = tree.predict_from_transposed(&transposed, sample_idx);
@@ -321,38 +389,41 @@ impl PKBoostRegressor {
                 cumulative_preds[sample_idx].push(last_pred + self.learning_rate * tree_pred);
             }
         }
-        
+
         let mut predictions = Vec::with_capacity(n_samples);
         let mut uncertainties = Vec::with_capacity(n_samples);
-        
+
         for sample_preds in cumulative_preds {
             let final_pred = *sample_preds.last().unwrap();
             predictions.push(final_pred);
-            
+
             let mean = sample_preds.iter().sum::<f64>() / sample_preds.len() as f64;
-            let variance = sample_preds.iter()
+            let variance = sample_preds
+                .iter()
                 .map(|&p| (p - mean).powi(2))
-                .sum::<f64>() / sample_preds.len() as f64;
+                .sum::<f64>()
+                / sample_preds.len() as f64;
             uncertainties.push(variance.sqrt());
         }
-        
-        Ok((predictions, uncertainties))
+
+        Ok((Array1::from(predictions), Array1::from(uncertainties)))
     }
-    
+
     pub fn prune_trees(&mut self, dead_features: &[usize], threshold: f64) -> usize {
         let initial = self.trees.len();
-        self.trees.retain(|tree| {
-            tree.feature_dependency_score(dead_features) < threshold
-        });
+        self.trees
+            .retain(|tree| tree.feature_dependency_score(dead_features) < threshold);
         initial - self.trees.len()
     }
-    
+
     pub fn get_feature_usage(&self) -> Vec<usize> {
-        let n_features = self.histogram_builder.as_ref()
+        let n_features = self
+            .histogram_builder
+            .as_ref()
             .map(|h| h.n_bins_per_feature.len())
             .unwrap_or(0);
         let mut usage = vec![0; n_features];
-        
+
         for tree in &self.trees {
             for &feat in &tree.get_used_features() {
                 if feat < usage.len() {
@@ -381,21 +452,31 @@ impl Default for PKBoostRegressor {
 }
 
 pub fn calculate_rmse(y_true: &[f64], y_pred: &[f64]) -> f64 {
-    let mse: f64 = y_true.iter().zip(y_pred.iter())
+    let mse: f64 = y_true
+        .iter()
+        .zip(y_pred.iter())
         .map(|(yt, yp)| (yt - yp).powi(2))
-        .sum::<f64>() / y_true.len() as f64;
+        .sum::<f64>()
+        / y_true.len() as f64;
     mse.sqrt()
 }
 
 pub fn calculate_mae(y_true: &[f64], y_pred: &[f64]) -> f64 {
-    y_true.iter().zip(y_pred.iter())
+    y_true
+        .iter()
+        .zip(y_pred.iter())
         .map(|(yt, yp)| (yt - yp).abs())
-        .sum::<f64>() / y_true.len() as f64
+        .sum::<f64>()
+        / y_true.len() as f64
 }
 
 pub fn calculate_r2(y_true: &[f64], y_pred: &[f64]) -> f64 {
     let mean = y_true.iter().sum::<f64>() / y_true.len() as f64;
     let ss_tot: f64 = y_true.iter().map(|y| (y - mean).powi(2)).sum();
-    let ss_res: f64 = y_true.iter().zip(y_pred.iter()).map(|(yt, yp)| (yt - yp).powi(2)).sum();
+    let ss_res: f64 = y_true
+        .iter()
+        .zip(y_pred.iter())
+        .map(|(yt, yp)| (yt - yp).powi(2))
+        .sum();
     1.0 - (ss_res / ss_tot)
 }

@@ -1,13 +1,60 @@
-use ndarray::{Array1, Array2, ArrayView1};
+use crate::fork_parallel::pfor_zip_map;
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
 
 #[derive(Debug, Clone)]
 pub struct TransposedData {
-    pub features: Array2<i16>, // CHANGED: i32 → i16 (2x less memory, 2x better cache)
+    pub features: Array2<i16>, // Transposed: (n_features, n_samples), i16 for cache efficiency
     pub n_samples: usize,
     pub n_features: usize,
 }
 
 impl TransposedData {
+    /// Create TransposedData from binned Array2<i16> (zero-copy path from histogram_builder)
+    /// Input: (n_samples, n_features), Output: transposed to (n_features, n_samples)
+    pub fn from_binned(binned: Array2<i16>) -> Self {
+        let (n_samples, n_features) = binned.dim();
+        if n_samples == 0 || n_features == 0 {
+            return Self {
+                features: Array2::zeros((0, 0)),
+                n_samples: 0,
+                n_features: 0,
+            };
+        }
+
+        // Transpose: (n_samples, n_features) -> (n_features, n_samples)
+        // This creates an owned copy with optimal memory layout
+        let features = binned.t().to_owned();
+
+        Self {
+            features,
+            n_samples,
+            n_features,
+        }
+    }
+
+    /// Create TransposedData from binned ArrayView2<i16> (avoids extra allocation)
+    pub fn from_binned_view(binned: ArrayView2<'_, i16>) -> Self {
+        let (n_samples, n_features) = binned.dim();
+        if n_samples == 0 || n_features == 0 {
+            return Self {
+                features: Array2::zeros((0, 0)),
+                n_samples: 0,
+                n_features: 0,
+            };
+        }
+
+        // Transpose and own
+        let features = binned.t().to_owned();
+
+        Self {
+            features,
+            n_samples,
+            n_features,
+        }
+    }
+
+    /// Legacy: Create from Vec<Vec<i32>> (deprecated, use from_binned instead)
+    #[deprecated(note = "Use from_binned() with Array2<i16> for zero-copy performance")]
     pub fn from_rows(rows: &[Vec<i32>]) -> Self {
         if rows.is_empty() {
             return Self {

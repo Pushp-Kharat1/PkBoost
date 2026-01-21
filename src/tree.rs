@@ -507,7 +507,7 @@ fn build_hists_optimized(
     params: &TreeParams,
 ) -> Vec<CachedHistogram> {
     // Parallel threshold: balance overhead vs speedup
-    let use_parallel = feature_indices.len() >= 4 && indices.len() >= 1000;
+    let use_parallel = feature_indices.len() >= 4 && indices.len() >= 10000;
 
     if use_parallel {
         // Use Rayon parallel iterator for histogram building
