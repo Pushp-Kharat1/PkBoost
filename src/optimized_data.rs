@@ -21,8 +21,13 @@ impl TransposedData {
         }
 
         // Transpose: (n_samples, n_features) -> (n_features, n_samples)
-        // This creates an owned copy with optimal memory layout
-        let features = binned.t().to_owned();
+        // Use from_shape_vec to create contiguous standard layout for .as_slice()
+        let transposed = binned.t();
+        let features = Array2::from_shape_vec(
+            (n_features, n_samples),
+            transposed.to_standard_layout().to_owned(),
+        )
+        .unwrap();
 
         Self {
             features,
@@ -42,8 +47,13 @@ impl TransposedData {
             };
         }
 
-        // Transpose and own
-        let features = binned.t().to_owned();
+        // Transpose and create contiguous standard layout
+        let transposed = binned.t();
+        let features = Array2::from_shape_vec(
+            (n_features, n_samples),
+            transposed.iter().cloned().collect(),
+        )
+        .unwrap();
 
         Self {
             features,
@@ -95,7 +105,13 @@ impl TransposedData {
     }
 
     pub fn get_feature_values(&self, feature_idx: usize) -> &[i16] {
-        self.features.row(feature_idx).to_slice().unwrap()
+        // With standard row-major layout, each row is contiguous in memory
+        // Slice directly from the underlying storage
+        let start = feature_idx * self.n_samples;
+        let end = start + self.n_samples;
+        &self.features.as_slice().expect(
+            "Memory layout error: Array is not contiguous. This is a bug in TransposedData.",
+        )[start..end]
     }
 
     #[inline]
