@@ -49,7 +49,7 @@ See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
 
 ## And For API's: [Python API README](python/README.md)
 
-## Try Google Colab Notebook: [Google Colab Notebook](https://colab.research.google.com/drive/1GJhuOzTc4kNY_hfL5qM5hXvbpWTJQXj0?usp=sharing)
+## Try Kaggle Notebook: [Kaggle Notebook](https://www.kaggle.com/code/pushpkharat/pkboost-adaptive-gbdt-build-for-drift-resilience)
 
 Clone the repository and build:
 
