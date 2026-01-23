@@ -21,6 +21,8 @@ raw_data/*.csv
 *.pkl
 *.zip
 *.xlsx
+*.png
+*.sav
 
 # Python
 __pycache__/
@@ -65,5 +67,5 @@ rust_code_with_structure.txt
 .gitignore
 all_rust_code.txt
 alb_metrics.csv
-
+profile.json.gz
 all_rust_code.txt
