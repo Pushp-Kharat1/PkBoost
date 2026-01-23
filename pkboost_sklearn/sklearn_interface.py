@@ -358,9 +358,9 @@ class PKBoostRegressor(BaseEstimator, RegressorMixin):
             y_val = y_val.astype(np.float64)
         
         if self.auto:
-            self._model = pkboost.PKBoostRegressor.auto()
+            self._model = pkboost.PKBoostRegressorPy.auto()
         else:
-            self._model = pkboost.PKBoostRegressor()
+            self._model = pkboost.PKBoostRegressorPy()
         
         X = np.ascontiguousarray(X, dtype=np.float64)
         y = np.ascontiguousarray(y, dtype=np.float64)
