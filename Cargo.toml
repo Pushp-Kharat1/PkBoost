@@ -23,7 +23,9 @@ exclude = [
     "*.csv",
     "target/*",
     "src/bin/*",
-    "profile.json.gz"
+    "profile.json.gz",
+    "test_suite/",
+    "*.ipynb",
 ]
 
 [dependencies]
