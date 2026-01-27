@@ -143,4 +143,9 @@ with open('model.pkl', 'rb') as f:
 
 ## License
 
-MIT License - Same as PKBoost
+PKBoost is dual-licensed under:
+
+- GNU General Public License v3.0 or later (GPL-3.0-or-later)
+- Apache License, Version 2.0
+
+You may choose either license when using this software.

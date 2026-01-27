@@ -2,7 +2,7 @@
 //!
 //! [![Crates.io](https://img.shields.io/crates/v/pkboost.svg)](https://crates.io/crates/pkboost)
 //! [![Documentation](https://docs.rs/pkboost/badge.svg)](https://docs.rs/pkboost)
-//! [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+//! [![License: GPL-3.0 OR Apache-2.0](https://img.shields.io/badge/License-GPL--3.0%20OR%20Apache--2.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 //!
 //! PKBoost (**P**erformance-Based **K**nowledge **Boost**er) is an adaptive gradient boosting
 //! library built from scratch in Rust, specifically designed for **extreme class imbalance**
@@ -212,7 +212,12 @@
 //!
 //! ## License
 //!
-//! This project is licensed under the GPL-3.0 License.
+//! This project is dual-licensed under:
+//!
+//! - GNU General Public License v3.0 or later (GPL-3.0-or-later)
+//! - Apache License, Version 2.0
+//!
+//! You may choose either license when using this software.
 
 pub mod adaptive_parallel;
 pub mod adversarial;

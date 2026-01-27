@@ -69,3 +69,9 @@ all_rust_code.txt
 alb_metrics.csv
 profile.json.gz
 all_rust_code.txt
+
+# Personal notebooks
+*.ipynb
+
+# Local experiments
+test_suite/

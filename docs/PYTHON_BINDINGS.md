@@ -242,7 +242,12 @@ model.fit(X_train, y_train, x_val=X_val[:1000], y_val=y_val[:1000])
 
 ## License
 
-MIT License - Free for commercial use
+PKBoost is dual-licensed under:
+
+- GNU General Public License v3.0 or later (GPL-3.0-or-later)
+- Apache License, Version 2.0
+
+You may choose either license when using this software. The Apache 2.0 license allows free commercial use.
 
 ## Citation
 

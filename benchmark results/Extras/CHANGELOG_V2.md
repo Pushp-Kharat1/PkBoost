@@ -180,5 +180,5 @@ let probs = model.predict_proba_batch(&x_test, 1000)?;
 **PKBoost v2.0**: The most comprehensive gradient boosting library for imbalanced multi-class problems under drift.
 
 **Release Date**: January 2025  
-**License**: MIT  
+**License**: GPL-3.0-or-later OR Apache-2.0 (dual-licensed)  
 **Author**: Pushp Kharat

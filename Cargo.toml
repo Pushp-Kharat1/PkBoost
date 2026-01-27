@@ -4,7 +4,7 @@ version = "2.2.2"
 edition = "2021"
 authors = ["Pushp Kharat <kharatpushp16@outlook.com>"]
 description = "Shannon-guided gradient boosting for extreme class imbalance with adaptive drift detection. Outperforms XGBoost/LightGBM on imbalanced data."
-license = "GPL-3.0"
+license = "GPL-3.0 OR Apache-2.0"
 repository = "https://github.com/Pushp-Kharat1/pkboost"
 homepage = "https://github.com/Pushp-Kharat1/pkboost"
 documentation = "https://docs.rs/pkboost"
@@ -82,6 +82,10 @@ path = "src/bin/benchmark_progressive_precision.rs"
 [[bin]]
 name = "threeway_comparison"
 path = "src/bin/threeway_comparison.rs"
+
+[[bin]]
+name = "benchmark_ndarray"
+path = "test_suite/benchmark_ndarray.rs"
 
 [lib]
 name = "pkboost"
