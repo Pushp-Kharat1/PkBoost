@@ -117,5 +117,4 @@ def check_for_updates():
         # Silently fail if offline, timeout, or other errors to be non-intrusive
         pass
 
-# Check for updates on import
-check_for_updates()
+
