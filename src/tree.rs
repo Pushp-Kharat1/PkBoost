@@ -36,6 +36,8 @@ pub struct OptimizedTreeShannon {
     left_children: Vec<usize>,
     right_children: Vec<usize>,
     pub feature_indices: Vec<usize>,
+    #[serde(default)]
+    node_covers: Vec<f64>, // training sample count per node (for contribution explanations)
 }
 
 impl OptimizedTreeShannon {
@@ -50,6 +52,7 @@ impl OptimizedTreeShannon {
             left_children: vec![0; max_nodes],
             right_children: vec![0; max_nodes],
             feature_indices: Vec::new(),
+            node_covers: vec![0.0; max_nodes],
         }
     }
 
@@ -189,6 +192,90 @@ impl OptimizedTreeShannon {
         features
     }
 
+    #[inline(always)]
+    fn set_cover(&mut self, node_idx: usize, cover: f64) {
+        self.node_covers[node_idx] = cover;
+    }
+
+    /// Whether this tree has cover data (models trained before v2.3 won't).
+    pub fn has_cover_data(&self) -> bool {
+        !self.node_covers.is_empty() && self.node_covers.iter().any(|&c| c > 0.0)
+    }
+
+    /// Compute the expected (cover-weighted average) leaf value for every node.
+    /// Returns a Vec the same length as node_types.
+    pub fn compute_node_expected_values(&self) -> Vec<f64> {
+        let mut expected = vec![0.0; self.node_types.len()];
+        self.fill_expected(0, &mut expected);
+        expected
+    }
+
+    fn fill_expected(&self, node_idx: usize, expected: &mut Vec<f64>) {
+        match self.node_types[node_idx] {
+            1 => {
+                // Leaf: expected value is the leaf prediction
+                expected[node_idx] = self.leaf_values[node_idx];
+            }
+            2 => {
+                // Split: recurse, then weight children by cover
+                let left = self.left_children[node_idx];
+                let right = self.right_children[node_idx];
+                self.fill_expected(left, expected);
+                self.fill_expected(right, expected);
+
+                let lc = self.node_covers[left];
+                let rc = self.node_covers[right];
+                let total = lc + rc;
+                if total > 0.0 {
+                    expected[node_idx] = (lc * expected[left] + rc * expected[right]) / total;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Walk the tree for one sample, accumulating per-feature Saabas contributions.
+    /// `contributions` must be pre-zeroed by the caller and have length >= n_features.
+    pub fn accumulate_contributions_from_transposed(
+        &self,
+        transposed_data: &TransposedData,
+        sample_idx: usize,
+        expected_values: &[f64],
+        contributions: &mut [f64],
+    ) {
+        let mut current = 0;
+        loop {
+            match self.node_types[current] {
+                1 => return, // leaf — done
+                2 => {
+                    let feature = self.split_features[current];
+                    let threshold = self.split_thresholds[current];
+
+                    let fval = if feature < transposed_data.n_features
+                        && sample_idx < transposed_data.n_samples
+                    {
+                        transposed_data.features[[feature, sample_idx]]
+                    } else {
+                        0
+                    };
+
+                    let child = if fval <= threshold {
+                        self.left_children[current]
+                    } else {
+                        self.right_children[current]
+                    };
+
+                    // Saabas: attribute the change in expected value to the split feature
+                    if feature < contributions.len() {
+                        contributions[feature] += expected_values[child] - expected_values[current];
+                    }
+                    current = child;
+                }
+                _ => return,
+            }
+        }
+    }
+
     pub fn fit_optimized(
         &mut self,
         transposed_data: &TransposedData,
@@ -254,6 +341,7 @@ impl OptimizedTreeShannon {
             let gradient_norm = g_total.abs();
             if gradient_norm < params.min_child_weight * 0.01 {
                 self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+                self.set_cover(task.node_index, n_samples as f64);
                 continue;
             }
 
@@ -263,6 +351,7 @@ impl OptimizedTreeShannon {
                 || h_total < params.min_child_weight
             {
                 self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+                self.set_cover(task.node_index, n_samples as f64);
                 continue;
             }
 
@@ -275,6 +364,7 @@ impl OptimizedTreeShannon {
 
             if best_split.is_none() || best_split.unwrap().1.best_gain <= 1e-6 {
                 self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+                self.set_cover(task.node_index, n_samples as f64);
                 continue;
             }
 
@@ -293,6 +383,7 @@ impl OptimizedTreeShannon {
 
             if workspace.left_indices.is_empty() || workspace.right_indices.is_empty() {
                 self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+                self.set_cover(task.node_index, n_samples as f64);
                 continue;
             }
 
@@ -350,6 +441,7 @@ impl OptimizedTreeShannon {
                 left_child_index,
                 right_child_index,
             );
+            self.set_cover(task.node_index, n_samples as f64);
             next_node_in_vec += 2;
 
             queue.push_back(SplitTask {

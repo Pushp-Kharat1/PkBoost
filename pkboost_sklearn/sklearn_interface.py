@@ -249,6 +249,39 @@ class PKBoostClassifier(ClassifierMixin, BaseEstimator):
         proba = self.predict_proba(X)
         return np.log(np.clip(proba, 1e-15, 1.0))
     
+    def predict_contributions(self, X):
+        """Compute per-sample feature contributions (Saabas method).
+
+        Each prediction is decomposed as::
+
+            raw_prediction = bias + sum(contributions)
+
+        where ``bias`` is the last column and ``contributions[i, j]`` is the
+        contribution of feature *j* to the raw prediction of sample *i*.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data.
+
+        Returns
+        -------
+        contributions : ndarray of shape (n_samples, n_features + 1)
+            Last column is the bias term.  Row sums equal the raw
+            (pre-sigmoid) prediction.
+        """
+        check_is_fitted(self)
+        X = check_array(X, accept_sparse=False, dtype=np.float64)
+
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"X has {X.shape[1]} features, but PKBoostClassifier "
+                f"was fitted with {self.n_features_in_} features."
+            )
+
+        X = np.ascontiguousarray(X, dtype=np.float64)
+        return self._model.predict_contributions(X)
+
     def decision_function(self, X):
         """Compute the decision function."""
         check_is_fitted(self)

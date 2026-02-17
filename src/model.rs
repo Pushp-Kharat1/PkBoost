@@ -10,7 +10,7 @@ use crate::{
     optimized_data::TransposedData,
     tree::{OptimizedTreeShannon, TreeParams},
 };
-use ndarray::{Array1, ArrayView1, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use rand::prelude::*;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -738,6 +738,79 @@ impl OptimizedPKBoostShannon {
             }
         }
         usage
+    }
+
+    /// Return the base score (log-odds bias learned during fit).
+    pub fn get_base_score(&self) -> f64 {
+        self.base_score
+    }
+
+    /// Compute per-feature Saabas contributions for each sample.
+    ///
+    /// Returns an Array2 of shape `[n_samples, n_features + 1]`.
+    /// The last column is the bias term (base_score + sum of tree expected values).
+    /// Row sums equal the raw (pre-sigmoid) prediction for each sample.
+    pub fn predict_contributions(
+        &self,
+        x: ArrayView2<'_, f64>,
+    ) -> Result<Array2<f64>, String> {
+        if !self.fitted {
+            return Err("Model not fitted".to_string());
+        }
+
+        // Check that all trees have cover data
+        if !self.trees.is_empty() && !self.trees[0].has_cover_data() {
+            return Err(
+                "This model was trained before contribution support was added. \
+                 Please retrain the model to use predict_contributions()."
+                    .to_string(),
+            );
+        }
+
+        let histogram_builder = self
+            .histogram_builder
+            .as_ref()
+            .ok_or("Histogram builder not initialized")?;
+
+        let n_features = histogram_builder.n_bins_per_feature.len();
+        let x_proc = histogram_builder.transform(x);
+        let transposed_data = TransposedData::from_binned(x_proc);
+        let n_samples = transposed_data.n_samples;
+
+        // Shape: [n_samples, n_features + 1]   (last col = bias)
+        let mut result = Array2::<f64>::zeros((n_samples, n_features + 1));
+
+        // Initialize bias column with base_score
+        for i in 0..n_samples {
+            result[[i, n_features]] = self.base_score;
+        }
+
+        // Pre-compute expected values once per tree, then iterate samples
+        for tree in &self.trees {
+            let expected = tree.compute_node_expected_values();
+
+            // Add tree's root expected value (scaled by lr) to the bias column
+            let root_expected = self.learning_rate * expected[0];
+            for i in 0..n_samples {
+                result[[i, n_features]] += root_expected;
+            }
+
+            // Accumulate per-feature contributions for each sample
+            for sample_idx in 0..n_samples {
+                let mut contribs = vec![0.0; n_features];
+                tree.accumulate_contributions_from_transposed(
+                    &transposed_data,
+                    sample_idx,
+                    &expected,
+                    &mut contribs,
+                );
+                for f in 0..n_features {
+                    result[[sample_idx, f]] += self.learning_rate * contribs[f];
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 
