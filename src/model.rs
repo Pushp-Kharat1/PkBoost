@@ -379,8 +379,7 @@ impl OptimizedPKBoostShannon {
         // 🔥 OPTIMIZATION: Transform ONCE and cache (biggest speedup!)
         // WHY: Eliminates 30-40% of runtime by avoiding repeated transforms
         let x_processed = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_binned(x_processed);
-        self.binned_data_cache = Some(transposed_data.clone());
+        self.binned_data_cache = Some(TransposedData::from_binned(x_processed));
         let transposed_data = self.binned_data_cache.as_ref().unwrap();
 
         let (x_val_processed, mut val_preds) = if let Some((x_val, y_val)) = eval_set {
@@ -413,29 +412,53 @@ impl OptimizedPKBoostShannon {
         let mut time_predict = std::time::Duration::ZERO;
         let mut time_update = std::time::Duration::ZERO;
 
+        // 🔥 OPTIMIZATION: Pre-allocate f32 grad/hess buffers (no dual f64 buffers needed)
+        // gradient_hessian_into_f32 computes in f64 internally, writes f32 directly
+        let mut grad_f32 = vec![0.0f32; n_samples];
+        let mut hess_f32 = vec![0.0f32; n_samples];
+        let all_sample_indices: Vec<usize> = (0..n_samples).collect();
+        let mut sample_indices: Vec<usize> = (0..n_samples).collect();
+        let mut feature_indices: Vec<usize> = (0..n_features).collect();
+        let mut tree_preds_buf = vec![0.0f64; n_samples];
+        let mut bins_buf: Vec<usize> = Vec::with_capacity(n_features);
+
         // boosting iterations
         for iteration in 0..self.n_estimators {
             let mut rng = rand::thread_rng();
 
-            // stochastic gradient boosting - subsample rows
+            // stochastic gradient boosting - subsample rows (reuse pre-allocated buffer)
             let sample_size = (self.subsample * n_samples as f64) as usize;
-            let mut sample_indices: Vec<usize> = (0..n_samples).collect();
+            sample_indices.clear();
+            sample_indices.extend(0..n_samples);
             sample_indices.shuffle(&mut rng);
             sample_indices.truncate(sample_size);
 
             let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
-            let mut feature_indices: Vec<usize> = (0..n_features).collect();
+            feature_indices.clear();
+            feature_indices.extend(0..n_features);
             feature_indices.shuffle(&mut rng);
             feature_indices.truncate(feature_size);
 
-            // PHASE 1: Compute gradients and hessians
+            // PHASE 1: Compute gradients and hessians directly as f32
             let t0 = Instant::now();
-            let (grad, hess) =
-                self.loss_fn
-                    .gradient_hessian(y_slice, &train_preds, self.scale_pos_weight);
+            self.loss_fn.gradient_hessian_into_f32(
+                y_slice,
+                &train_preds,
+                self.scale_pos_weight,
+                &mut grad_f32,
+                &mut hess_f32,
+            );
             time_grad_hess += t0.elapsed();
 
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
+
+            // Reuse n_bins_per_feature buffer
+            bins_buf.clear();
+            bins_buf.extend(
+                feature_indices
+                    .iter()
+                    .map(|&i| histogram_builder.n_bins_per_feature[i]),
+            );
 
             let tree_params = TreeParams {
                 min_samples_split: self.min_samples_split,
@@ -443,30 +466,35 @@ impl OptimizedPKBoostShannon {
                 reg_lambda: self.reg_lambda,
                 gamma: self.gamma,
                 mi_weight: self.mi_weight,
-                n_bins_per_feature: feature_indices
-                    .iter()
-                    .map(|&i| histogram_builder.n_bins_per_feature[i])
-                    .collect(),
+                n_bins_per_feature: std::mem::take(&mut bins_buf),
                 feature_elimination_threshold: 0.01,
             };
 
-            // PHASE 2: Tree fitting (includes histogram building)
+            // PHASE 2: Tree fitting (no cast loop needed — grad/hess already f32)
             let t1 = Instant::now();
             tree.fit_optimized(
                 &transposed_data,
                 y_slice,
-                &grad,
-                &hess,
+                &grad_f32,
+                &hess_f32,
                 &sample_indices,
                 &feature_indices,
                 &tree_params,
             );
             time_tree_fit += t1.elapsed();
 
+            // Recover the bins buffer for reuse next iteration
+            bins_buf = tree_params.n_bins_per_feature;
+
             // Print timing breakdown every 100 iterations
             if (iteration + 1) % 100 == 0 && verbose {
-                let grad_norm: f64 = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
-                let grad_mean: f64 = grad.iter().sum::<f64>() / grad.len() as f64;
+                let grad_norm: f64 = grad_f32
+                    .iter()
+                    .map(|g| (*g as f64) * (*g as f64))
+                    .sum::<f64>()
+                    .sqrt();
+                let grad_mean: f64 =
+                    grad_f32.iter().map(|g| *g as f64).sum::<f64>() / grad_f32.len() as f64;
                 let pred_min = train_preds.iter().cloned().fold(f64::INFINITY, f64::min);
                 let pred_max = train_preds
                     .iter()
@@ -504,25 +532,19 @@ impl OptimizedPKBoostShannon {
                 }
             }
 
-            // PHASE 3: Batch prediction
+            // PHASE 3: Batch prediction (into pre-allocated buffer)
             let t2 = Instant::now();
-            let sample_indices_vec: Vec<usize> = (0..n_samples).collect();
-            let tree_preds = tree.predict_batch(&transposed_data, &sample_indices_vec);
+            tree.predict_batch_into(&transposed_data, &all_sample_indices, &mut tree_preds_buf);
             time_predict += t2.elapsed();
 
             let adaptive_lr = self.learning_rate;
 
-            // PHASE 4: Update predictions
+            // PHASE 4: Update predictions (fused update + clamp in single pass)
+            // Sequential is faster here — avoids 2 Rayon dispatches for trivial element-wise ops
             let t3 = Instant::now();
-            train_preds
-                .par_iter_mut()
-                .zip(tree_preds.par_iter())
-                .for_each(|(current_pred, tree_pred)| *current_pred += adaptive_lr * tree_pred);
-
-            // clamp to prevent numerical instability
-            train_preds.par_iter_mut().for_each(|pred| {
-                *pred = pred.clamp(-10.0, 10.0);
-            });
+            for (current_pred, &tree_pred) in train_preds.iter_mut().zip(tree_preds_buf.iter()) {
+                *current_pred = (*current_pred + adaptive_lr * tree_pred).clamp(-10.0, 10.0);
+            }
             time_update += t3.elapsed();
 
             if let (Some(ref val_transposed_data), Some(ref mut val_preds_ref), Some((_, y_val))) =
@@ -532,12 +554,12 @@ impl OptimizedPKBoostShannon {
                 let val_sample_indices: Vec<usize> = (0..val_transposed_data.n_samples).collect();
                 let val_tree_preds = tree.predict_batch(val_transposed_data, &val_sample_indices);
 
-                val_preds_ref
-                    .par_iter_mut()
-                    .zip(val_tree_preds.par_iter())
-                    .for_each(|(current_pred, tree_pred)| {
-                        *current_pred += adaptive_lr * tree_pred;
-                    });
+                // Sequential update — avoids Rayon dispatch for simple add
+                for (current_pred, &tree_pred) in
+                    val_preds_ref.iter_mut().zip(val_tree_preds.iter())
+                {
+                    *current_pred += adaptive_lr * tree_pred;
+                }
 
                 // evaluate on validation set periodically (less frequent = faster)
                 if (iteration + 1) % 20 == 0 || iteration == 0 {

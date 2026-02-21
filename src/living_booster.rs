@@ -632,13 +632,15 @@ impl AdversarialLivingBooster {
                 self.primary
                     .loss_fn
                     .hessian(&buffer_y, &raw_preds, self.primary.scale_pos_weight);
+            let grad_f32: Vec<f32> = grad.iter().map(|&g| g as f32).collect();
+            let hess_f32: Vec<f32> = hess.iter().map(|&h| h as f32).collect();
 
             let mut new_tree = OptimizedTreeShannon::new(self.primary.max_depth);
             new_tree.fit_optimized(
                 &transposed_data,
                 &buffer_y,
-                &grad,
-                &hess,
+                &grad_f32,
+                &hess_f32,
                 &sample_indices,
                 &feature_indices,
                 &tree_params,

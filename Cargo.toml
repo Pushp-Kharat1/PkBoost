@@ -1,6 +1,6 @@
 [package]
 name = "pkboost"
-version = "2.2.2"
+version = "2.2.3"
 edition = "2021"
 authors = ["Pushp Kharat <kharatpushp16@outlook.com>"]
 description = "Shannon-guided gradient boosting for extreme class imbalance with adaptive drift detection. Outperforms XGBoost/LightGBM on imbalanced data."
@@ -13,6 +13,7 @@ keywords = ["machine-learning", "gradient-boosting", "classification", "imbalanc
 categories = ["science", "algorithms"]
 rust-version = "1.70"
 exclude = [
+    "pkboost_sklearn/*",
     "data/*",
     "raw_data/*",
     "temp/*",
@@ -23,9 +24,7 @@ exclude = [
     "*.csv",
     "target/*",
     "src/bin/*",
-    "profile.json.gz",
-    "test_suite/",
-    "*.ipynb",
+    "profile.json.gz"
 ]
 
 [dependencies]
@@ -44,50 +43,55 @@ log = "0.4"
 half = { version = "2.4", features = ["std", "num-traits"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+ureq = "2"
 
 [[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
+name = "benchmark_fraud"
+path = "src/bin/benchmark_fraud.rs"
 
-[[bin]]
-name = "test_living"
-path = "src/bin/test_living.rs"
+# [[bin]]
+# name = "benchmark"
+# path = "src/bin/benchmark.rs"
 
-[[bin]]
-name = "test_drift"
-path = "src/bin/test_drift.rs"
+# [[bin]]
+# name = "test_living"
+# path = "src/bin/test_living.rs"
 
-[[bin]]
-name = "test_static"
-path = "src/bin/test_static.rs"
+# [[bin]]
+# name = "test_drift"
+# path = "src/bin/test_drift.rs"
 
-[[bin]]
-name = "test_retrain"
-path = "src/bin/test_retrain.rs"
+# [[bin]]
+# name = "test_static"
+# path = "src/bin/test_static.rs"
 
-[[bin]]
-name = "test_regression"
-path = "src/bin/test_regression.rs"
+# [[bin]]
+# name = "test_retrain"
+# path = "src/bin/test_retrain.rs"
 
-[[bin]]
-name = "test_adaptive_regression"
-path = "src/bin/test_adaptive_regression.rs"
+# [[bin]]
+# name = "test_regression"
+# path = "src/bin/test_regression.rs"
 
-[[bin]]
-name = "test_precision"
-path = "src/bin/test_precision.rs"
+# [[bin]]
+# name = "test_adaptive_regression"
+# path = "src/bin/test_adaptive_regression.rs"
 
-[[bin]]
-name = "benchmark_progressive_precision"
-path = "src/bin/benchmark_progressive_precision.rs"
+# [[bin]]
+# name = "test_precision"
+# path = "src/bin/test_precision.rs"
 
-[[bin]]
-name = "threeway_comparison"
-path = "src/bin/threeway_comparison.rs"
+# [[bin]]
+# name = "benchmark_progressive_precision"
+# path = "src/bin/benchmark_progressive_precision.rs"
 
-[[bin]]
-name = "benchmark_ndarray"
-path = "test_suite/benchmark_ndarray.rs"
+# [[bin]]
+# name = "threeway_comparison"
+# path = "src/bin/threeway_comparison.rs"
+
+# [[bin]]
+# name = "benchmark_ndarray"
+# path = "test_suite/benchmark_ndarray.rs"
 
 [lib]
 name = "pkboost"

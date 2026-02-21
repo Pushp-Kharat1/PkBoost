@@ -7,9 +7,9 @@
 use fork_union as fu;
 use std::cell::{RefCell, UnsafeCell};
 
-/// Thread-local pool for ForkUnion operations
-/// Uses RefCell instead of Mutex for zero synchronization overhead
-/// SAFETY: ForkUnion dispatches from the calling thread, workers are internal
+// Thread-local pool for ForkUnion operations
+// Uses RefCell instead of Mutex for zero synchronization overhead
+// SAFETY: ForkUnion dispatches from the calling thread, workers are internal
 thread_local! {
     static POOL: RefCell<Option<fu::ThreadPool>> = RefCell::new(None);
 }

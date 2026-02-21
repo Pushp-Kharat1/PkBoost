@@ -771,12 +771,15 @@ impl AdaptiveRegressor {
                 break;
             }
 
+            let grad_f32: Vec<f32> = grad.iter().map(|&g| g as f32).collect();
+            let hess_f32: Vec<f32> = hess.iter().map(|&h| h as f32).collect();
+
             let mut tree = OptimizedTreeShannon::new(self.primary.max_depth);
             tree.fit_optimized(
                 &transposed,
                 &buffer_y,
-                &grad,
-                &hess,
+                &grad_f32,
+                &hess_f32,
                 &sample_indices,
                 &feature_indices,
                 &params,
@@ -789,7 +792,7 @@ impl AdaptiveRegressor {
 
             for (i, &tp) in tree_preds.iter().enumerate() {
                 raw_preds[i] += adaptive_lr * tp;
-                let y_range = y_mean.abs() * 100.0;
+                let y_range = (y_mean.abs() * 100.0).max(1.0);
                 raw_preds[i] = raw_preds[i].clamp(y_mean - y_range, y_mean + y_range);
             }
 

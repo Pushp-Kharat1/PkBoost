@@ -67,6 +67,89 @@ impl OptimizedShannonLoss {
         }
     }
 
+    /// OPTIMIZED: Write gradients and hessians into pre-allocated buffers
+    /// Avoids allocating 2 new Vecs per boosting iteration
+    #[inline]
+    pub fn gradient_hessian_into(
+        &self,
+        y_true: &[f64],
+        y_pred: &[f64],
+        scale_pos_weight: f64,
+        grad_out: &mut [f64],
+        hess_out: &mut [f64],
+    ) {
+        let n = y_true.len();
+        debug_assert_eq!(grad_out.len(), n);
+        debug_assert_eq!(hess_out.len(), n);
+
+        if n >= PARALLEL_THRESHOLD {
+            // Parallel path: write directly into output slices
+            grad_out
+                .par_iter_mut()
+                .zip(hess_out.par_iter_mut())
+                .zip(y_pred.par_iter())
+                .zip(y_true.par_iter())
+                .for_each(|(((g, h), &pred), &true_y)| {
+                    let prob = 1.0 / (1.0 + (-pred).exp());
+                    let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
+                    *g = weight * (prob - true_y);
+                    *h = weight * prob * (1.0 - prob).max(1e-6);
+                });
+        } else {
+            for i in 0..n {
+                let prob = 1.0 / (1.0 + (-y_pred[i]).exp());
+                let weight = if y_true[i] > 0.5 {
+                    scale_pos_weight
+                } else {
+                    1.0
+                };
+                grad_out[i] = weight * (prob - y_true[i]);
+                hess_out[i] = weight * prob * (1.0 - prob).max(1e-6);
+            }
+        }
+    }
+
+    /// OPTIMIZED: Write gradients/hessians directly as f32
+    /// Eliminates the f64→f32 cast loop and dual buffer overhead
+    #[inline]
+    pub fn gradient_hessian_into_f32(
+        &self,
+        y_true: &[f64],
+        y_pred: &[f64],
+        scale_pos_weight: f64,
+        grad_out: &mut [f32],
+        hess_out: &mut [f32],
+    ) {
+        let n = y_true.len();
+        debug_assert_eq!(grad_out.len(), n);
+        debug_assert_eq!(hess_out.len(), n);
+
+        if n >= PARALLEL_THRESHOLD {
+            grad_out
+                .par_iter_mut()
+                .zip(hess_out.par_iter_mut())
+                .zip(y_pred.par_iter())
+                .zip(y_true.par_iter())
+                .for_each(|(((g, h), &pred), &true_y)| {
+                    let prob = 1.0_f64 / (1.0 + (-pred).exp());
+                    let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
+                    *g = (weight * (prob - true_y)) as f32;
+                    *h = (weight * prob * (1.0 - prob).max(1e-6)) as f32;
+                });
+        } else {
+            for i in 0..n {
+                let prob = 1.0_f64 / (1.0 + (-y_pred[i]).exp());
+                let weight = if y_true[i] > 0.5 {
+                    scale_pos_weight
+                } else {
+                    1.0
+                };
+                grad_out[i] = (weight * (prob - y_true[i])) as f32;
+                hess_out[i] = (weight * prob * (1.0 - prob).max(1e-6)) as f32;
+            }
+        }
+    }
+
     /// Legacy: separate gradient (for backward compatibility)
     pub fn gradient(&self, y_true: &[f64], y_pred: &[f64], scale_pos_weight: f64) -> Vec<f64> {
         self.gradient_hessian(y_true, y_pred, scale_pos_weight).0

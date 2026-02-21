@@ -129,7 +129,9 @@ impl PKBoostRegressor {
         let mut model = Self::new();
         let n_samples = x.nrows();
         let n_features = x.ncols();
-        let y_slice = y.as_slice().unwrap();
+        let y_slice = y
+            .as_slice()
+            .expect("Y array must be contiguous for regression");
 
         // Auto-select loss based on outliers
         let outlier_ratio = detect_outliers(y_slice);
@@ -220,15 +222,12 @@ impl PKBoostRegressor {
             use rand::seq::SliceRandom;
             sample_indices.shuffle(&mut rng);
             sample_indices.truncate(sample_size);
-
             let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
             let mut feature_indices: Vec<usize> = (0..n_features).collect();
             feature_indices.shuffle(&mut rng);
             feature_indices.truncate(feature_size);
-
             let grad = self.get_gradient(y_slice, &train_preds);
             let hess = self.get_hessian(y_slice, &train_preds);
-
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
             let params = TreeParams {
                 min_samples_split: self.min_samples_split,
@@ -243,11 +242,14 @@ impl PKBoostRegressor {
                 feature_elimination_threshold: 0.01,
             };
 
+            let grad_f32: Vec<f32> = grad.iter().map(|&g| g as f32).collect();
+            let hess_f32: Vec<f32> = hess.iter().map(|&h| h as f32).collect();
+
             tree.fit_optimized(
                 &transposed,
                 y_slice,
-                &grad,
-                &hess,
+                &grad_f32,
+                &hess_f32,
                 &sample_indices,
                 &feature_indices,
                 &params,
@@ -266,16 +268,16 @@ impl PKBoostRegressor {
             if let (Some(ref vt), Some(ref mut vp), Some((_, yv))) =
                 (val_trans.as_ref(), val_preds.as_mut(), eval_set)
             {
-                let yv_slice = yv.as_slice().unwrap();
+                let yv_slice = yv
+                    .as_slice()
+                    .expect("Y validation array must be contiguous for regression");
                 let val_tree_preds: Vec<f64> = (0..vt.n_samples)
                     .into_par_iter()
                     .map(|i| tree.predict_from_transposed(vt, i))
                     .collect();
-
                 vp.par_iter_mut()
                     .zip(val_tree_preds.par_iter())
                     .for_each(|(p, &tp)| *p += self.learning_rate * tp);
-
                 if (iter + 1) % 10 == 0 {
                     let mse: f64 = vp
                         .iter()

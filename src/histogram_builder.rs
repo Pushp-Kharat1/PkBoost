@@ -42,13 +42,17 @@ impl OptimizedHistogramBuilder {
 
             //  Use Floyd-Rivest (faster than quickselect for small k)
             let mid = sample.len() / 2;
-            sample.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
+            sample.select_nth_unstable_by(mid, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
             return sample[mid];
         }
 
         // Exact median for small arrays
         let mid = feature_values.len() / 2;
-        feature_values.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
+        feature_values.select_nth_unstable_by(mid, |a, b| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        });
         feature_values[mid]
     }
 
@@ -77,7 +81,7 @@ impl OptimizedHistogramBuilder {
 
                 let median = Self::calculate_median(&mut valid_values);
 
-                valid_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                valid_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 valid_values.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
 
                 let edges = if valid_values.len() <= self.max_bins {
@@ -173,9 +177,9 @@ impl OptimizedHistogramBuilder {
         bins
     }
 
-    /// Transform input data to binned representation (ArrayView2 -> Array2<i16>)
+    /// Transform input data to binned representation (ArrayView2 -> Array2<u8>)
     /// This is zero-copy on input, returns owned binned data
-    pub fn transform(&self, x: ArrayView2<'_, f64>) -> Array2<i16> {
+    pub fn transform(&self, x: ArrayView2<'_, f64>) -> Array2<u8> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
 
@@ -184,7 +188,7 @@ impl OptimizedHistogramBuilder {
         }
 
         // Pre-allocate output array
-        let mut result = Array2::<i16>::zeros((n_samples, n_features));
+        let mut result = Array2::<u8>::zeros((n_samples, n_features));
 
         // Process in parallel by rows using Rayon
         result
@@ -210,7 +214,7 @@ impl OptimizedHistogramBuilder {
                     } else {
                         0
                     };
-                    *out_val = final_bin_idx as i16;
+                    *out_val = final_bin_idx as u8;
                 }
             });
 
@@ -219,7 +223,7 @@ impl OptimizedHistogramBuilder {
 
     /// Transform a single row (for incremental prediction)
     #[inline]
-    pub fn transform_row(&self, row: &[f64]) -> Vec<i16> {
+    pub fn transform_row(&self, row: &[f64]) -> Vec<u8> {
         row.iter()
             .enumerate()
             .map(|(feature_idx, &value)| {
@@ -238,19 +242,19 @@ impl OptimizedHistogramBuilder {
                 } else {
                     0
                 };
-                final_bin_idx as i16
+                final_bin_idx as u8
             })
             .collect()
     }
 
     /// Batched transform for memory-constrained environments
-    pub fn transform_batched(&self, x: ArrayView2<'_, f64>, batch_size: usize) -> Array2<i16> {
+    pub fn transform_batched(&self, x: ArrayView2<'_, f64>, batch_size: usize) -> Array2<u8> {
         let config = crate::adaptive_parallel::get_parallel_config();
         let n_samples = x.nrows();
 
         if config.memory_efficient_mode && n_samples > batch_size {
             let n_features = x.ncols();
-            let mut result = Array2::<i16>::zeros((n_samples, n_features));
+            let mut result = Array2::<u8>::zeros((n_samples, n_features));
 
             for (batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
                 let chunk_end = (chunk_start + batch_size).min(n_samples);
