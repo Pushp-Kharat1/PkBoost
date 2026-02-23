@@ -373,15 +373,13 @@ impl TransposedData {
     }
 
     /// Zero-allocation histogram build for f32 grad/hess + u8 y hot path.
-    /// Resets and fills a pre-allocated CachedHistogram, avoiding 4 Vec allocs per call.
+    /// Uses pre-gathered ActiveData for better cache locality and reduced bandwidth.
     #[inline]
     pub fn build_histogram_into_f32(
         &self,
         feature_idx: usize,
         indices: &[usize],
-        grad: &[f32],
-        hess: &[f32],
-        y_u8: &[u8],
+        active_data: &[ActiveData],
         n_bins: usize,
         out: &mut CachedHistogram,
     ) {
@@ -421,61 +419,45 @@ impl TransposedData {
                 let bin5 = (*feature_values.get_unchecked(idx5) as usize).min(max_bin);
                 let bin6 = (*feature_values.get_unchecked(idx6) as usize).min(max_bin);
                 let bin7 = (*feature_values.get_unchecked(idx7) as usize).min(max_bin);
-                let g0 = *grad.get_unchecked(idx0);
-                let h0 = *hess.get_unchecked(idx0);
-                let y0 = *y_u8.get_unchecked(idx0);
-                let g1 = *grad.get_unchecked(idx1);
-                let h1 = *hess.get_unchecked(idx1);
-                let y1 = *y_u8.get_unchecked(idx1);
-                let g2 = *grad.get_unchecked(idx2);
-                let h2 = *hess.get_unchecked(idx2);
-                let y2 = *y_u8.get_unchecked(idx2);
-                let g3 = *grad.get_unchecked(idx3);
-                let h3 = *hess.get_unchecked(idx3);
-                let y3 = *y_u8.get_unchecked(idx3);
-                let g4 = *grad.get_unchecked(idx4);
-                let h4 = *hess.get_unchecked(idx4);
-                let y4 = *y_u8.get_unchecked(idx4);
-                let g5 = *grad.get_unchecked(idx5);
-                let h5 = *hess.get_unchecked(idx5);
-                let y5 = *y_u8.get_unchecked(idx5);
-                let g6 = *grad.get_unchecked(idx6);
-                let h6 = *hess.get_unchecked(idx6);
-                let y6 = *y_u8.get_unchecked(idx6);
-                let g7 = *grad.get_unchecked(idx7);
-                let h7 = *hess.get_unchecked(idx7);
-                let y7 = *y_u8.get_unchecked(idx7);
-                *hist_grad.get_unchecked_mut(bin0) += g0 as f64;
-                *hist_hess.get_unchecked_mut(bin0) += h0 as f64;
-                *hist_y.get_unchecked_mut(bin0) += y0 as f64;
+                let ad0 = active_data.get_unchecked(i);
+                let ad1 = active_data.get_unchecked(i + 1);
+                let ad2 = active_data.get_unchecked(i + 2);
+                let ad3 = active_data.get_unchecked(i + 3);
+                let ad4 = active_data.get_unchecked(i + 4);
+                let ad5 = active_data.get_unchecked(i + 5);
+                let ad6 = active_data.get_unchecked(i + 6);
+                let ad7 = active_data.get_unchecked(i + 7);
+                *hist_grad.get_unchecked_mut(bin0) += ad0.grad as f64;
+                *hist_hess.get_unchecked_mut(bin0) += ad0.hess as f64;
+                *hist_y.get_unchecked_mut(bin0) += ad0.y as f64;
                 *hist_count.get_unchecked_mut(bin0) += 1.0;
-                *hist_grad.get_unchecked_mut(bin1) += g1 as f64;
-                *hist_hess.get_unchecked_mut(bin1) += h1 as f64;
-                *hist_y.get_unchecked_mut(bin1) += y1 as f64;
+                *hist_grad.get_unchecked_mut(bin1) += ad1.grad as f64;
+                *hist_hess.get_unchecked_mut(bin1) += ad1.hess as f64;
+                *hist_y.get_unchecked_mut(bin1) += ad1.y as f64;
                 *hist_count.get_unchecked_mut(bin1) += 1.0;
-                *hist_grad.get_unchecked_mut(bin2) += g2 as f64;
-                *hist_hess.get_unchecked_mut(bin2) += h2 as f64;
-                *hist_y.get_unchecked_mut(bin2) += y2 as f64;
+                *hist_grad.get_unchecked_mut(bin2) += ad2.grad as f64;
+                *hist_hess.get_unchecked_mut(bin2) += ad2.hess as f64;
+                *hist_y.get_unchecked_mut(bin2) += ad2.y as f64;
                 *hist_count.get_unchecked_mut(bin2) += 1.0;
-                *hist_grad.get_unchecked_mut(bin3) += g3 as f64;
-                *hist_hess.get_unchecked_mut(bin3) += h3 as f64;
-                *hist_y.get_unchecked_mut(bin3) += y3 as f64;
+                *hist_grad.get_unchecked_mut(bin3) += ad3.grad as f64;
+                *hist_hess.get_unchecked_mut(bin3) += ad3.hess as f64;
+                *hist_y.get_unchecked_mut(bin3) += ad3.y as f64;
                 *hist_count.get_unchecked_mut(bin3) += 1.0;
-                *hist_grad.get_unchecked_mut(bin4) += g4 as f64;
-                *hist_hess.get_unchecked_mut(bin4) += h4 as f64;
-                *hist_y.get_unchecked_mut(bin4) += y4 as f64;
+                *hist_grad.get_unchecked_mut(bin4) += ad4.grad as f64;
+                *hist_hess.get_unchecked_mut(bin4) += ad4.hess as f64;
+                *hist_y.get_unchecked_mut(bin4) += ad4.y as f64;
                 *hist_count.get_unchecked_mut(bin4) += 1.0;
-                *hist_grad.get_unchecked_mut(bin5) += g5 as f64;
-                *hist_hess.get_unchecked_mut(bin5) += h5 as f64;
-                *hist_y.get_unchecked_mut(bin5) += y5 as f64;
+                *hist_grad.get_unchecked_mut(bin5) += ad5.grad as f64;
+                *hist_hess.get_unchecked_mut(bin5) += ad5.hess as f64;
+                *hist_y.get_unchecked_mut(bin5) += ad5.y as f64;
                 *hist_count.get_unchecked_mut(bin5) += 1.0;
-                *hist_grad.get_unchecked_mut(bin6) += g6 as f64;
-                *hist_hess.get_unchecked_mut(bin6) += h6 as f64;
-                *hist_y.get_unchecked_mut(bin6) += y6 as f64;
+                *hist_grad.get_unchecked_mut(bin6) += ad6.grad as f64;
+                *hist_hess.get_unchecked_mut(bin6) += ad6.hess as f64;
+                *hist_y.get_unchecked_mut(bin6) += ad6.y as f64;
                 *hist_count.get_unchecked_mut(bin6) += 1.0;
-                *hist_grad.get_unchecked_mut(bin7) += g7 as f64;
-                *hist_hess.get_unchecked_mut(bin7) += h7 as f64;
-                *hist_y.get_unchecked_mut(bin7) += y7 as f64;
+                *hist_grad.get_unchecked_mut(bin7) += ad7.grad as f64;
+                *hist_hess.get_unchecked_mut(bin7) += ad7.hess as f64;
+                *hist_y.get_unchecked_mut(bin7) += ad7.y as f64;
                 *hist_count.get_unchecked_mut(bin7) += 1.0;
             }
             i += 8;
@@ -485,14 +467,23 @@ impl TransposedData {
             unsafe {
                 let idx = *indices.get_unchecked(i);
                 let bin = (*feature_values.get_unchecked(idx) as usize).min(max_bin);
-                *hist_grad.get_unchecked_mut(bin) += *grad.get_unchecked(idx) as f64;
-                *hist_hess.get_unchecked_mut(bin) += *hess.get_unchecked(idx) as f64;
-                *hist_y.get_unchecked_mut(bin) += *y_u8.get_unchecked(idx) as f64;
+                let ad = active_data.get_unchecked(i);
+                *hist_grad.get_unchecked_mut(bin) += ad.grad as f64;
+                *hist_hess.get_unchecked_mut(bin) += ad.hess as f64;
+                *hist_y.get_unchecked_mut(bin) += ad.y as f64;
                 *hist_count.get_unchecked_mut(bin) += 1.0;
             }
             i += 1;
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct ActiveData {
+    pub grad: f32,
+    pub hess: f32,
+    pub y: u8,
 }
 
 #[derive(Debug, Clone, Default)]

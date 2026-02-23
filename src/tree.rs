@@ -1,9 +1,9 @@
 // Decision tree implementation with histogram-based splitting
 // OPTIMIZED VERSION with ~30-40% speed improvement
 
+use crate::fork_parallel::{pfor_indexed, pfor_range_map};
 use crate::metrics::calculate_shannon_entropy;
 use crate::optimized_data::{CachedHistogram, TransposedData};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -130,18 +130,16 @@ impl OptimizedTreeShannon {
         }
     }
 
-    // Batch prediction — parallel for large sets (validation), sequential for small
-    // Note: predict_batch_into (training hot loop) is always sequential
+    // Batch prediction — ForkUnion parallel for large sets, sequential for small
     pub fn predict_batch(
         &self,
         transposed_data: &TransposedData,
         sample_indices: &[usize],
     ) -> Vec<f64> {
         if sample_indices.len() >= 50_000 {
-            sample_indices
-                .par_iter()
-                .map(|&sample_idx| self.predict_from_transposed(transposed_data, sample_idx))
-                .collect()
+            pfor_range_map(0..sample_indices.len(), |i| {
+                self.predict_from_transposed(transposed_data, sample_indices[i])
+            })
         } else {
             sample_indices
                 .iter()
@@ -259,6 +257,7 @@ impl OptimizedTreeShannon {
             sample_indices,
             params,
             &mut root_hists,
+            &mut workspace.active_data,
         );
 
         let mut queue: VecDeque<SplitTask> = VecDeque::with_capacity(max_nodes / 2);
@@ -296,8 +295,8 @@ impl OptimizedTreeShannon {
                 continue;
             }
 
-            // OPTIMIZATION 4: Fast parallel split finding
-            let best_split = find_best_split_across_features_optimized(
+            // OPTIMIZATION 4: Parallel split finding
+            let best_split = find_best_split_across_features_parallel(
                 &task.histogram,
                 params,
                 task.depth as i32,
@@ -311,8 +310,8 @@ impl OptimizedTreeShannon {
             let (best_feature_local_idx, split_info) = best_split.unwrap();
             let best_feature_global_idx = self.feature_indices[best_feature_local_idx];
 
-            // OPTIMIZATION 5: Fast partitioning with pre-allocated buffers
-            partition_into_optimized(
+            // OPTIMIZATION 5: Parallel partitioning for large nodes
+            partition_parallel(
                 &task.sample_indices,
                 best_feature_global_idx,
                 split_info.best_bin_idx,
@@ -343,6 +342,7 @@ impl OptimizedTreeShannon {
                 smaller_indices,
                 params,
                 &mut smaller_hist_pool,
+                &mut workspace.active_data,
             );
 
             // Subtract: parent - smaller = larger (into pre-allocated pool)
@@ -435,12 +435,14 @@ thread_local! {
 
 struct IndexPool {
     buffers: Vec<Vec<usize>>,
+    active_buffers: Vec<Vec<crate::optimized_data::ActiveData>>,
 }
 
 impl IndexPool {
     fn new() -> Self {
         Self {
             buffers: Vec::with_capacity(8),
+            active_buffers: Vec::with_capacity(4),
         }
     }
 
@@ -456,8 +458,25 @@ impl IndexPool {
     }
 
     fn release(&mut self, buf: Vec<usize>) {
-        if buf.capacity() <= 8192 && self.buffers.len() < 16 {
+        if buf.capacity() <= 1024 * 1024 && self.buffers.len() < 16 {
             self.buffers.push(buf);
+        }
+    }
+
+    fn acquire_active(&mut self, capacity: usize) -> Vec<crate::optimized_data::ActiveData> {
+        self.active_buffers
+            .pop()
+            .map(|mut buf| {
+                buf.clear();
+                buf.reserve(capacity.saturating_sub(buf.capacity()));
+                buf
+            })
+            .unwrap_or_else(|| Vec::with_capacity(capacity))
+    }
+
+    fn release_active(&mut self, buf: Vec<crate::optimized_data::ActiveData>) {
+        if buf.capacity() <= 512 * 1024 && self.active_buffers.len() < 8 {
+            self.active_buffers.push(buf);
         }
     }
 }
@@ -465,6 +484,7 @@ impl IndexPool {
 struct TreeBuildingWorkspace {
     left_indices: Vec<usize>,
     right_indices: Vec<usize>,
+    active_data: Vec<crate::optimized_data::ActiveData>,
 }
 
 impl TreeBuildingWorkspace {
@@ -472,8 +492,9 @@ impl TreeBuildingWorkspace {
         INDEX_POOL.with(|pool| {
             let mut pool = pool.borrow_mut();
             Self {
-                left_indices: pool.acquire(n_samples / 2),
-                right_indices: pool.acquire(n_samples / 2),
+                left_indices: pool.acquire(n_samples / 2 + 1024),
+                right_indices: pool.acquire(n_samples / 2 + 1024),
+                active_data: pool.acquire_active(n_samples + 1024),
             }
         })
     }
@@ -483,10 +504,9 @@ impl Drop for TreeBuildingWorkspace {
     fn drop(&mut self) {
         INDEX_POOL.with(|pool| {
             let mut pool = pool.borrow_mut();
-            let left = std::mem::take(&mut self.left_indices);
-            let right = std::mem::take(&mut self.right_indices);
-            pool.release(left);
-            pool.release(right);
+            pool.release(std::mem::take(&mut self.left_indices));
+            pool.release(std::mem::take(&mut self.right_indices));
+            pool.release_active(std::mem::take(&mut self.active_data));
         });
     }
 }
@@ -507,22 +527,89 @@ fn partition_into_optimized(
 
     let feature_values = transposed_data.get_feature_values(feature_idx);
 
-    let estimated_half = indices.len() / 2;
-    left_out.reserve(estimated_half);
-    right_out.reserve(estimated_half);
-
     for &i in indices {
-        if feature_values[i] <= threshold {
-            left_out.push(i);
-        } else {
-            right_out.push(i);
+        unsafe {
+            if *feature_values.get_unchecked(i) <= threshold {
+                left_out.push(i);
+            } else {
+                right_out.push(i);
+            }
         }
     }
 }
 
-// OPTIMIZATION 9: Parallel per-feature histogram building (ZERO-ALLOCATION)
-// Builds into pre-allocated histogram buffers instead of allocating new ones.
-// Each feature's histogram is built independently using Rayon parallelism.
+// Parallel partitioning for large nodes
+fn partition_parallel(
+    indices: &[usize],
+    feature_idx: usize,
+    threshold: u8,
+    transposed_data: &TransposedData,
+    left_out: &mut Vec<usize>,
+    right_out: &mut Vec<usize>,
+) {
+    let n = indices.len();
+    if n < 20_000 {
+        return partition_into_optimized(
+            indices,
+            feature_idx,
+            threshold,
+            transposed_data,
+            left_out,
+            right_out,
+        );
+    }
+
+    let feature_values = transposed_data.get_feature_values(feature_idx);
+
+    let num_cpus = num_cpus::get().min(n / 5000).max(1);
+    let chunk_size = (n + num_cpus - 1) / num_cpus;
+
+    let mut thread_locals: Vec<(Vec<usize>, Vec<usize>)> = (0..num_cpus)
+        .map(|_| {
+            (
+                Vec::with_capacity(chunk_size / 2 + 100),
+                Vec::with_capacity(chunk_size / 2 + 100),
+            )
+        })
+        .collect();
+
+    let tl_ptr = thread_locals.as_mut_ptr() as usize;
+    let fv_ptr = feature_values.as_ptr() as usize;
+    let ind_ptr = indices.as_ptr() as usize;
+
+    crate::fork_parallel::pfor_indexed(num_cpus, move |prong| {
+        let tl_ptr = tl_ptr as *mut (Vec<usize>, Vec<usize>);
+        let fv_ptr = fv_ptr as *const u8;
+        let ind_ptr = ind_ptr as *const usize;
+
+        let (local_left, local_right) = unsafe { &mut *tl_ptr.add(prong) };
+        let start = prong * chunk_size;
+        let end = (start + chunk_size).min(n);
+
+        for i in start..end {
+            unsafe {
+                let idx = *ind_ptr.add(i);
+                if *fv_ptr.add(idx) <= threshold {
+                    local_left.push(idx);
+                } else {
+                    local_right.push(idx);
+                }
+            }
+        }
+    });
+
+    // Combine results
+    left_out.clear();
+    right_out.clear();
+    for (mut l, mut r) in thread_locals {
+        left_out.append(&mut l);
+        right_out.append(&mut r);
+    }
+}
+
+// OPTIMIZATION: ForkUnion parallel per-feature histogram building (ZERO-ALLOCATION)
+// Uses ForkUnion's low-overhead for_n instead of Rayon's high-overhead par_iter_mut.
+// No mutexes, no CAS, no heap allocations on the dispatch path.
 fn build_hists_into(
     feature_indices: &[usize],
     transposed_data: &TransposedData,
@@ -532,36 +619,75 @@ fn build_hists_into(
     indices: &[usize],
     params: &TreeParams,
     out: &mut [CachedHistogram],
+    workspace_active: &mut Vec<crate::optimized_data::ActiveData>,
 ) {
     debug_assert!(out.len() >= feature_indices.len());
 
-    // Parallel threshold raised: avoid Rayon overhead for small workloads
-    let use_parallel = feature_indices.len() >= 8 && indices.len() >= 50_000;
+    let n_features = feature_indices.len();
+    let n_samples = indices.len();
 
-    if use_parallel {
-        out[..feature_indices.len()]
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(feat_idx_local, hist)| {
-                let actual_feat_idx = feature_indices[feat_idx_local];
-                transposed_data.build_histogram_into_f32(
-                    actual_feat_idx,
-                    indices,
-                    grad,
-                    hess,
-                    y_u8,
-                    params.n_bins_per_feature[feat_idx_local],
-                    hist,
-                );
-            });
+    // OPTIMIZATION: Parallel Gathering (REDUCES BANDWIDTH 3x -> 1x)
+    // Gather active data into contiguous buffer using all available cores.
+    workspace_active.clear();
+    workspace_active.resize(n_samples, crate::optimized_data::ActiveData::default());
+
+    if n_samples >= 10_000 {
+        let active_ptr = workspace_active.as_mut_ptr() as usize;
+        let ind_ptr = indices.as_ptr() as usize;
+        let grad_ptr = grad.as_ptr() as usize;
+        let hess_ptr = hess.as_ptr() as usize;
+        let y_ptr = y_u8.as_ptr() as usize;
+
+        pfor_indexed(n_samples, move |i| {
+            let active_ptr = active_ptr as *mut crate::optimized_data::ActiveData;
+            let ind_ptr = ind_ptr as *const usize;
+            let grad_ptr = grad_ptr as *const f32;
+            let hess_ptr = hess_ptr as *const f32;
+            let y_ptr = y_ptr as *const u8;
+            unsafe {
+                let idx = *ind_ptr.add(i);
+                let dest = active_ptr.add(i);
+                (*dest).grad = *grad_ptr.add(idx);
+                (*dest).hess = *hess_ptr.add(idx);
+                (*dest).y = *y_ptr.add(idx);
+            }
+        });
+    } else {
+        for (i, &idx) in indices.iter().enumerate() {
+            unsafe {
+                let dest = workspace_active.get_unchecked_mut(i);
+                dest.grad = *grad.get_unchecked(idx);
+                dest.hess = *hess.get_unchecked(idx);
+                dest.y = *y_u8.get_unchecked(idx);
+            }
+        }
+    }
+
+    // ForkUnion parallel for large workloads, sequential for small
+    // TUNED: Increased threshold to 10,000 samples to reduce sync overhead
+    if n_features >= 4 && n_samples >= 10_000 {
+        // Safety: each task writes to a unique out[feat_idx_local], no overlap
+        let out_ptr = out.as_mut_ptr() as usize;
+        let active_ref = &*workspace_active;
+        pfor_indexed(n_features, move |feat_idx_local| {
+            let actual_feat_idx = feature_indices[feat_idx_local];
+            // Safety: each task only accesses out[feat_idx_local], unique per task
+            let out_ptr = out_ptr as *mut CachedHistogram;
+            let hist = unsafe { &mut *out_ptr.add(feat_idx_local) };
+            transposed_data.build_histogram_into_f32(
+                actual_feat_idx,
+                indices,
+                active_ref,
+                params.n_bins_per_feature[feat_idx_local],
+                hist,
+            );
+        });
     } else {
         for (feat_idx_local, &actual_feat_idx) in feature_indices.iter().enumerate() {
             transposed_data.build_histogram_into_f32(
                 actual_feat_idx,
                 indices,
-                grad,
-                hess,
-                y_u8,
+                workspace_active,
                 params.n_bins_per_feature[feat_idx_local],
                 &mut out[feat_idx_local],
             );
@@ -569,55 +695,42 @@ fn build_hists_into(
     }
 }
 
-// OPTIMIZATION 10: Fast feature elimination with early exit
-fn find_best_split_across_features_optimized(
+// OPTIMIZATION: Parallel split finding (scans all feature histograms in parallel)
+fn find_best_split_across_features_parallel(
     hists: &[CachedHistogram],
     params: &TreeParams,
     depth: i32,
 ) -> Option<(usize, HistSplitResult)> {
-    // Sequential scan for smaller feature sets (avoids parallelism overhead)
-    if hists.len() <= 16 {
-        return hists
-            .iter()
-            .enumerate()
-            .filter(|(_, hist)| {
-                let (_, hess, _, count) = hist.as_slices();
-                let total_hess: f64 = hess.iter().sum();
-                let non_zero_bins = count.iter().filter(|&&c| c > 0.0).count();
-                total_hess > params.min_child_weight * params.feature_elimination_threshold
-                    && non_zero_bins > 1
-            })
-            .map(|(feat_idx_local, hist)| {
-                (
-                    feat_idx_local,
-                    find_best_split_cached_optimized(hist, params, depth),
-                )
-            })
-            .max_by(|a, b| {
-                a.1.best_gain
-                    .partial_cmp(&b.1.best_gain)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+    let n = hists.len();
+    if n == 0 {
+        return None;
     }
 
-    // Parallel for larger feature sets
-    hists
-        .par_iter()
+    // Use pfor_range_map to find best split per feature in parallel
+    let feature_results = pfor_range_map(0..n, |feat_idx_local| {
+        let hist = &hists[feat_idx_local];
+        let (_, hess, _, count) = hist.as_slices();
+        let total_hess: f64 = hess.iter().sum();
+        let non_zero_bins = count.iter().filter(|&&c| c > 0.0).count();
+
+        if total_hess > params.min_child_weight * params.feature_elimination_threshold
+            && non_zero_bins > 1
+        {
+            Some(find_best_split_cached_optimized(hist, params, depth))
+        } else {
+            None
+        }
+    });
+
+    feature_results
+        .into_iter()
         .enumerate()
-        .filter(|(_, hist)| {
-            let (_, hess, _, count) = hist.as_slices();
-            let total_hess: f64 = hess.iter().sum();
-            let non_zero_bins = count.iter().filter(|&&c| c > 0.0).count();
-            total_hess > params.min_child_weight * params.feature_elimination_threshold
-                && non_zero_bins > 1
+        .filter_map(|(i, res)| res.map(|r| (i, r)))
+        .max_by(|a, b| {
+            a.1.best_gain
+                .partial_cmp(&b.1.best_gain)
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .map(|(feat_idx_local, hist)| {
-            (
-                feat_idx_local,
-                find_best_split_cached_optimized(hist, params, depth),
-            )
-        })
-        .reduce_with(|a, b| if a.1.best_gain > b.1.best_gain { a } else { b })
 }
 
 #[derive(Debug, Clone, Copy)]

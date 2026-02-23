@@ -256,7 +256,7 @@ impl OptimizedHistogramBuilder {
             let n_features = x.ncols();
             let mut result = Array2::<u8>::zeros((n_samples, n_features));
 
-            for (batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
+            for (_batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
                 let chunk_end = (chunk_start + batch_size).min(n_samples);
                 let chunk = x.slice(ndarray::s![chunk_start..chunk_end, ..]);
                 let batch_result = self.transform(chunk);
