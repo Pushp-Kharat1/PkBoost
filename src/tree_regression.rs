@@ -30,20 +30,17 @@ pub fn find_best_split_regression(
     params: &TreeParams,
     depth: i32,
 ) -> HistSplitResult {
-    let (grad, hess, y, count) = hist.as_slices();
+    let bins = &hist.bins;
 
-    let mut g_total = 0.0;
-    let mut h_total = 0.0;
-    let mut y_total = 0.0;
+    let g_total = hist.sums.grad as f64;
+    let h_total = hist.sums.hess as f64;
+    let y_total = hist.sums.y as f64;
+    let n_total = hist.sums.count as f64;
+
+    // We still need y_sq_total for variance calculation
     let mut y_sq_total = 0.0;
-    let mut n_total = 0.0;
-
-    for i in 0..grad.len() {
-        g_total += grad[i];
-        h_total += hess[i];
-        y_total += y[i];
-        y_sq_total += y[i] * y[i];
-        n_total += count[i];
+    for b in bins {
+        y_sq_total += (b.y as f64) * (b.y as f64);
     }
 
     if n_total < params.min_samples_split as f64 {
@@ -63,12 +60,15 @@ pub fn find_best_split_regression(
     let mut y_sq_left = 0.0;
     let mut n_left = 0.0;
 
-    for i in 0..(grad.len().saturating_sub(1)) {
-        gl += grad[i];
-        hl += hess[i];
-        y_left += y[i];
-        y_sq_left += y[i] * y[i];
-        n_left += count[i];
+    let n_splits = bins.len().saturating_sub(1);
+
+    for i in 0..n_splits {
+        let b = unsafe { bins.get_unchecked(i) };
+        gl += b.grad as f64;
+        hl += b.hess as f64;
+        y_left += b.y as f64;
+        y_sq_left += (b.y as f64) * (b.y as f64);
+        n_left += b.count as f64;
 
         if n_left < 1.0 || hl < params.min_child_weight {
             continue;

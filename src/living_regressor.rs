@@ -8,7 +8,6 @@ use crate::regression::calculate_rmse;
 use crate::regression::PKBoostRegressor;
 use crate::tree::{OptimizedTreeShannon, TreeParams};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use rayon::prelude::*;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -736,7 +735,7 @@ impl AdaptiveRegressor {
         let transposed = TransposedData::from_binned(x_proc);
 
         let feature_indices: Vec<usize> = (0..n_features).collect();
-        let sample_indices: Vec<usize> = (0..n_samples).collect();
+        let sample_indices: Vec<u32> = (0..n_samples as u32).collect();
 
         let params = TreeParams {
             min_samples_split: self.primary.min_samples_split,
@@ -785,10 +784,9 @@ impl AdaptiveRegressor {
                 &params,
             );
 
-            let tree_preds: Vec<f64> = (0..n_samples)
-                .into_par_iter()
-                .map(|i| tree.predict_from_transposed(&transposed, i))
-                .collect();
+            let tree_preds = crate::fork_parallel::pfor_range_map(0..n_samples, |i| {
+                tree.predict_from_transposed(&transposed, i as u32)
+            });
 
             for (i, &tp) in tree_preds.iter().enumerate() {
                 raw_preds[i] += adaptive_lr * tp;

@@ -1,4 +1,50 @@
-use ndarray::{Array2, ArrayView1, ArrayView2};
+use ndarray::{Array2, ArrayView2};
+use serde::{Deserialize, Serialize};
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use std::arch::x86_64::*;
+
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct SampleData {
+    pub grad: f32,
+    pub hess: f32,
+    pub y: f32,
+    pub count: f32,
+}
+
+impl SampleData {
+    #[inline(always)]
+    pub unsafe fn as_m128(&self) -> __m128 {
+        _mm_load_ps(&self.grad as *const f32)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActiveData {
+    pub samples: Vec<SampleData>,
+}
+
+impl ActiveData {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            samples: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn resize(&mut self, n: usize) {
+        self.samples.resize(n, SampleData::default());
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    #[inline(always)]
+    pub unsafe fn as_m128_ptr(&self) -> *const SampleData {
+        self.samples.as_ptr()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TransposedData {
@@ -9,7 +55,6 @@ pub struct TransposedData {
 
 impl TransposedData {
     /// Create TransposedData from binned Array2<u8> (zero-copy path from histogram_builder)
-    /// Input: (n_samples, n_features), Output: transposed to (n_features, n_samples)
     pub fn from_binned(binned: Array2<u8>) -> Self {
         let (n_samples, n_features) = binned.dim();
         if n_samples == 0 || n_features == 0 {
@@ -20,8 +65,6 @@ impl TransposedData {
             };
         }
 
-        // Transpose: (n_samples, n_features) -> (n_features, n_samples)
-        // Use from_shape_vec to create contiguous standard layout for .as_slice()
         let transposed = binned.t();
         let features = Array2::from_shape_vec(
             (n_features, n_samples),
@@ -36,7 +79,6 @@ impl TransposedData {
         }
     }
 
-    /// Create TransposedData from binned ArrayView2<u8> (avoids extra allocation)
     pub fn from_binned_view(binned: ArrayView2<'_, u8>) -> Self {
         let (n_samples, n_features) = binned.dim();
         if n_samples == 0 || n_features == 0 {
@@ -47,7 +89,6 @@ impl TransposedData {
             };
         }
 
-        // Transpose and create contiguous standard layout
         let transposed = binned.t();
         let features = Array2::from_shape_vec(
             (n_features, n_samples),
@@ -62,324 +103,22 @@ impl TransposedData {
         }
     }
 
-    /// Legacy: Create from Vec<Vec<i32>> (deprecated, use from_binned instead)
-    #[deprecated(note = "Use from_binned() with Array2<u8> for zero-copy performance")]
-    pub fn from_rows(rows: &[Vec<i32>]) -> Self {
-        if rows.is_empty() {
-            return Self {
-                features: Array2::zeros((0, 0)),
-                n_samples: 0,
-                n_features: 0,
-            };
-        }
-
-        const BLOCK_SIZE: usize = 64;
-
-        let n_samples = rows.len();
-        let n_features = rows[0].len();
-        let mut features = Array2::zeros((n_features, n_samples));
-
-        // Block-based transposition for better cache locality
-        for feature_block_start in (0..n_features).step_by(BLOCK_SIZE) {
-            let feature_block_end = (feature_block_start + BLOCK_SIZE).min(n_features);
-
-            for sample_block_start in (0..n_samples).step_by(BLOCK_SIZE) {
-                let sample_block_end = (sample_block_start + BLOCK_SIZE).min(n_samples);
-
-                for sample_idx in sample_block_start..sample_block_end {
-                    let row = &rows[sample_idx];
-                    for feature_idx in feature_block_start..feature_block_end {
-                        if feature_idx < row.len() {
-                            features[[feature_idx, sample_idx]] = row[feature_idx] as u8;
-                        }
-                    }
-                }
-            }
-        }
-
-        Self {
-            features,
-            n_samples,
-            n_features,
-        }
-    }
-
+    #[inline]
     pub fn get_feature_values(&self, feature_idx: usize) -> &[u8] {
-        // With standard row-major layout, each row is contiguous in memory
-        // Slice directly from the underlying storage
         let start = feature_idx * self.n_samples;
         let end = start + self.n_samples;
-        &self.features.as_slice().unwrap_or_else(|| {
-            // This should not happen with our current implementation
-            // since we ensure contiguity in from_binned methods
-            panic!("TransposedData features array is not contiguous. This indicates a bug in array creation.")
-        })[start..end]
+        &self
+            .features
+            .as_slice()
+            .expect("TransposedData features array must be contiguous")[start..end]
     }
 
-    #[inline]
-    pub fn build_histogram_vectorized(
-        &self,
-        feature_idx: usize,
-        indices: &[usize],
-        grad: &[f32],
-        hess: &[f32],
-        y_u8: &[u8],
-        n_bins: usize,
-    ) -> CachedHistogram {
-        if n_bins == 0 {
-            return CachedHistogram::new(vec![], vec![], vec![], vec![]);
-        }
-
-        let mut hist_grad = vec![0.0; n_bins];
-        let mut hist_hess = vec![0.0; n_bins];
-        let mut hist_y = vec![0.0; n_bins];
-        let mut hist_count = vec![0.0; n_bins];
-
-        let feature_values = self.get_feature_values(feature_idx);
-
-        let len = indices.len();
-        let max_bin = n_bins - 1;
-
-        debug_assert!(
-            indices.iter().all(|&idx| idx < self.n_samples),
-            "Invalid sample index found"
-        );
-
-        // OPTIMIZATION: 8x unrolled loop with separated fetch/update phases
-        let mut i = 0;
-
-        while i + 8 <= len {
-            unsafe {
-                // Phase 1: Fetch all indices
-                let idx0 = *indices.get_unchecked(i);
-                let idx1 = *indices.get_unchecked(i + 1);
-                let idx2 = *indices.get_unchecked(i + 2);
-                let idx3 = *indices.get_unchecked(i + 3);
-                let idx4 = *indices.get_unchecked(i + 4);
-                let idx5 = *indices.get_unchecked(i + 5);
-                let idx6 = *indices.get_unchecked(i + 6);
-                let idx7 = *indices.get_unchecked(i + 7);
-                // Phase 2: Compute all bins
-                let bin0 = (*feature_values.get_unchecked(idx0) as usize).min(max_bin);
-                let bin1 = (*feature_values.get_unchecked(idx1) as usize).min(max_bin);
-                let bin2 = (*feature_values.get_unchecked(idx2) as usize).min(max_bin);
-                let bin3 = (*feature_values.get_unchecked(idx3) as usize).min(max_bin);
-                let bin4 = (*feature_values.get_unchecked(idx4) as usize).min(max_bin);
-                let bin5 = (*feature_values.get_unchecked(idx5) as usize).min(max_bin);
-                let bin6 = (*feature_values.get_unchecked(idx6) as usize).min(max_bin);
-                let bin7 = (*feature_values.get_unchecked(idx7) as usize).min(max_bin);
-                // Phase 3: Fetch all grad/hess/y values (f32 grad/hess, u8 y)
-                let g0 = *grad.get_unchecked(idx0);
-                let h0 = *hess.get_unchecked(idx0);
-                let y0 = *y_u8.get_unchecked(idx0);
-                let g1 = *grad.get_unchecked(idx1);
-                let h1 = *hess.get_unchecked(idx1);
-                let y1 = *y_u8.get_unchecked(idx1);
-                let g2 = *grad.get_unchecked(idx2);
-                let h2 = *hess.get_unchecked(idx2);
-                let y2 = *y_u8.get_unchecked(idx2);
-                let g3 = *grad.get_unchecked(idx3);
-                let h3 = *hess.get_unchecked(idx3);
-                let y3 = *y_u8.get_unchecked(idx3);
-                let g4 = *grad.get_unchecked(idx4);
-                let h4 = *hess.get_unchecked(idx4);
-                let y4 = *y_u8.get_unchecked(idx4);
-                let g5 = *grad.get_unchecked(idx5);
-                let h5 = *hess.get_unchecked(idx5);
-                let y5 = *y_u8.get_unchecked(idx5);
-                let g6 = *grad.get_unchecked(idx6);
-                let h6 = *hess.get_unchecked(idx6);
-                let y6 = *y_u8.get_unchecked(idx6);
-                let g7 = *grad.get_unchecked(idx7);
-                let h7 = *hess.get_unchecked(idx7);
-                let y7 = *y_u8.get_unchecked(idx7);
-                // Phase 4: Accumulate (f32→f64 cast on accumulate, bins stay f64)
-                *hist_grad.get_unchecked_mut(bin0) += g0 as f64;
-                *hist_hess.get_unchecked_mut(bin0) += h0 as f64;
-                *hist_y.get_unchecked_mut(bin0) += y0 as f64;
-                *hist_count.get_unchecked_mut(bin0) += 1.0;
-                *hist_grad.get_unchecked_mut(bin1) += g1 as f64;
-                *hist_hess.get_unchecked_mut(bin1) += h1 as f64;
-                *hist_y.get_unchecked_mut(bin1) += y1 as f64;
-                *hist_count.get_unchecked_mut(bin1) += 1.0;
-                *hist_grad.get_unchecked_mut(bin2) += g2 as f64;
-                *hist_hess.get_unchecked_mut(bin2) += h2 as f64;
-                *hist_y.get_unchecked_mut(bin2) += y2 as f64;
-                *hist_count.get_unchecked_mut(bin2) += 1.0;
-                *hist_grad.get_unchecked_mut(bin3) += g3 as f64;
-                *hist_hess.get_unchecked_mut(bin3) += h3 as f64;
-                *hist_y.get_unchecked_mut(bin3) += y3 as f64;
-                *hist_count.get_unchecked_mut(bin3) += 1.0;
-                *hist_grad.get_unchecked_mut(bin4) += g4 as f64;
-                *hist_hess.get_unchecked_mut(bin4) += h4 as f64;
-                *hist_y.get_unchecked_mut(bin4) += y4 as f64;
-                *hist_count.get_unchecked_mut(bin4) += 1.0;
-                *hist_grad.get_unchecked_mut(bin5) += g5 as f64;
-                *hist_hess.get_unchecked_mut(bin5) += h5 as f64;
-                *hist_y.get_unchecked_mut(bin5) += y5 as f64;
-                *hist_count.get_unchecked_mut(bin5) += 1.0;
-                *hist_grad.get_unchecked_mut(bin6) += g6 as f64;
-                *hist_hess.get_unchecked_mut(bin6) += h6 as f64;
-                *hist_y.get_unchecked_mut(bin6) += y6 as f64;
-                *hist_count.get_unchecked_mut(bin6) += 1.0;
-                *hist_grad.get_unchecked_mut(bin7) += g7 as f64;
-                *hist_hess.get_unchecked_mut(bin7) += h7 as f64;
-                *hist_y.get_unchecked_mut(bin7) += y7 as f64;
-                *hist_count.get_unchecked_mut(bin7) += 1.0;
-            }
-            i += 8;
-        }
-
-        // Handle remaining elements
-        while i < len {
-            unsafe {
-                let idx = *indices.get_unchecked(i);
-                let bin = (*feature_values.get_unchecked(idx) as usize).min(max_bin);
-                *hist_grad.get_unchecked_mut(bin) += *grad.get_unchecked(idx) as f64;
-                *hist_hess.get_unchecked_mut(bin) += *hess.get_unchecked(idx) as f64;
-                *hist_y.get_unchecked_mut(bin) += *y_u8.get_unchecked(idx) as f64;
-                *hist_count.get_unchecked_mut(bin) += 1.0;
-            }
-            i += 1;
-        }
-
-        CachedHistogram::new(hist_grad, hist_hess, hist_y, hist_count)
-    }
-
-    /// OPTIMIZED: Build histogram into pre-allocated CachedHistogram buffers
-    /// Avoids allocating 4 new Vecs per call (millions of saved allocations)
-    #[inline]
-    pub fn build_histogram_into(
-        &self,
-        feature_idx: usize,
-        indices: &[usize],
-        grad: &ArrayView1<f64>,
-        hess: &ArrayView1<f64>,
-        y: &ArrayView1<f64>,
-        n_bins: usize,
-        out: &mut CachedHistogram,
-    ) {
-        if n_bins == 0 {
-            return;
-        }
-
-        out.reset(n_bins);
-
-        let hist_grad = &mut out.grad;
-        let hist_hess = &mut out.hess;
-        let hist_y = &mut out.y;
-        let hist_count = &mut out.count;
-
-        let feature_values = self.get_feature_values(feature_idx);
-        let grad_slice = grad.as_slice().expect("Gradient array must be contiguous");
-        let hess_slice = hess.as_slice().expect("Hessian array must be contiguous");
-        let y_slice = y.as_slice().expect("Target array must be contiguous");
-
-        let len = indices.len();
-        let max_bin = n_bins - 1;
-
-        // 8x unrolled loop with separated fetch/update phases
-        let mut i = 0;
-
-        while i + 8 <= len {
-            unsafe {
-                let idx0 = *indices.get_unchecked(i);
-                let idx1 = *indices.get_unchecked(i + 1);
-                let idx2 = *indices.get_unchecked(i + 2);
-                let idx3 = *indices.get_unchecked(i + 3);
-                let idx4 = *indices.get_unchecked(i + 4);
-                let idx5 = *indices.get_unchecked(i + 5);
-                let idx6 = *indices.get_unchecked(i + 6);
-                let idx7 = *indices.get_unchecked(i + 7);
-                let bin0 = (*feature_values.get_unchecked(idx0) as usize).min(max_bin);
-                let bin1 = (*feature_values.get_unchecked(idx1) as usize).min(max_bin);
-                let bin2 = (*feature_values.get_unchecked(idx2) as usize).min(max_bin);
-                let bin3 = (*feature_values.get_unchecked(idx3) as usize).min(max_bin);
-                let bin4 = (*feature_values.get_unchecked(idx4) as usize).min(max_bin);
-                let bin5 = (*feature_values.get_unchecked(idx5) as usize).min(max_bin);
-                let bin6 = (*feature_values.get_unchecked(idx6) as usize).min(max_bin);
-                let bin7 = (*feature_values.get_unchecked(idx7) as usize).min(max_bin);
-                let g0 = *grad_slice.get_unchecked(idx0);
-                let h0 = *hess_slice.get_unchecked(idx0);
-                let y0 = *y_slice.get_unchecked(idx0);
-                let g1 = *grad_slice.get_unchecked(idx1);
-                let h1 = *hess_slice.get_unchecked(idx1);
-                let y1 = *y_slice.get_unchecked(idx1);
-                let g2 = *grad_slice.get_unchecked(idx2);
-                let h2 = *hess_slice.get_unchecked(idx2);
-                let y2 = *y_slice.get_unchecked(idx2);
-                let g3 = *grad_slice.get_unchecked(idx3);
-                let h3 = *hess_slice.get_unchecked(idx3);
-                let y3 = *y_slice.get_unchecked(idx3);
-                let g4 = *grad_slice.get_unchecked(idx4);
-                let h4 = *hess_slice.get_unchecked(idx4);
-                let y4 = *y_slice.get_unchecked(idx4);
-                let g5 = *grad_slice.get_unchecked(idx5);
-                let h5 = *hess_slice.get_unchecked(idx5);
-                let y5 = *y_slice.get_unchecked(idx5);
-                let g6 = *grad_slice.get_unchecked(idx6);
-                let h6 = *hess_slice.get_unchecked(idx6);
-                let y6 = *y_slice.get_unchecked(idx6);
-                let g7 = *grad_slice.get_unchecked(idx7);
-                let h7 = *hess_slice.get_unchecked(idx7);
-                let y7 = *y_slice.get_unchecked(idx7);
-                *hist_grad.get_unchecked_mut(bin0) += g0;
-                *hist_hess.get_unchecked_mut(bin0) += h0;
-                *hist_y.get_unchecked_mut(bin0) += y0;
-                *hist_count.get_unchecked_mut(bin0) += 1.0;
-                *hist_grad.get_unchecked_mut(bin1) += g1;
-                *hist_hess.get_unchecked_mut(bin1) += h1;
-                *hist_y.get_unchecked_mut(bin1) += y1;
-                *hist_count.get_unchecked_mut(bin1) += 1.0;
-                *hist_grad.get_unchecked_mut(bin2) += g2;
-                *hist_hess.get_unchecked_mut(bin2) += h2;
-                *hist_y.get_unchecked_mut(bin2) += y2;
-                *hist_count.get_unchecked_mut(bin2) += 1.0;
-                *hist_grad.get_unchecked_mut(bin3) += g3;
-                *hist_hess.get_unchecked_mut(bin3) += h3;
-                *hist_y.get_unchecked_mut(bin3) += y3;
-                *hist_count.get_unchecked_mut(bin3) += 1.0;
-                *hist_grad.get_unchecked_mut(bin4) += g4;
-                *hist_hess.get_unchecked_mut(bin4) += h4;
-                *hist_y.get_unchecked_mut(bin4) += y4;
-                *hist_count.get_unchecked_mut(bin4) += 1.0;
-                *hist_grad.get_unchecked_mut(bin5) += g5;
-                *hist_hess.get_unchecked_mut(bin5) += h5;
-                *hist_y.get_unchecked_mut(bin5) += y5;
-                *hist_count.get_unchecked_mut(bin5) += 1.0;
-                *hist_grad.get_unchecked_mut(bin6) += g6;
-                *hist_hess.get_unchecked_mut(bin6) += h6;
-                *hist_y.get_unchecked_mut(bin6) += y6;
-                *hist_count.get_unchecked_mut(bin6) += 1.0;
-                *hist_grad.get_unchecked_mut(bin7) += g7;
-                *hist_hess.get_unchecked_mut(bin7) += h7;
-                *hist_y.get_unchecked_mut(bin7) += y7;
-                *hist_count.get_unchecked_mut(bin7) += 1.0;
-            }
-            i += 8;
-        }
-
-        while i < len {
-            unsafe {
-                let idx = *indices.get_unchecked(i);
-                let bin = (*feature_values.get_unchecked(idx) as usize).min(max_bin);
-                *hist_grad.get_unchecked_mut(bin) += *grad_slice.get_unchecked(idx);
-                *hist_hess.get_unchecked_mut(bin) += *hess_slice.get_unchecked(idx);
-                *hist_y.get_unchecked_mut(bin) += *y_slice.get_unchecked(idx);
-                *hist_count.get_unchecked_mut(bin) += 1.0;
-            }
-            i += 1;
-        }
-    }
-
-    /// Zero-allocation histogram build for f32 grad/hess + u8 y hot path.
-    /// Uses pre-gathered ActiveData for better cache locality and reduced bandwidth.
     #[inline]
     pub fn build_histogram_into_f32(
         &self,
         feature_idx: usize,
-        indices: &[usize],
-        active_data: &[ActiveData],
+        indices: &[u32],
+        active_data: &ActiveData,
         n_bins: usize,
         out: &mut CachedHistogram,
     ) {
@@ -388,321 +127,431 @@ impl TransposedData {
         }
 
         out.reset(n_bins);
-
-        let hist_grad = &mut out.grad;
-        let hist_hess = &mut out.hess;
-        let hist_y = &mut out.y;
-        let hist_count = &mut out.count;
-
         let feature_values = self.get_feature_values(feature_idx);
         let len = indices.len();
-        let max_bin = n_bins - 1;
+        let max_bin = (n_bins - 1) as usize;
 
-        // 8x unrolled loop (same as build_histogram_vectorized but into pre-allocated buffers)
         let mut i = 0;
+        let samples = &active_data.samples;
+        let hist_bins = &mut out.bins;
 
         while i + 8 <= len {
             unsafe {
-                let idx0 = *indices.get_unchecked(i);
-                let idx1 = *indices.get_unchecked(i + 1);
-                let idx2 = *indices.get_unchecked(i + 2);
-                let idx3 = *indices.get_unchecked(i + 3);
-                let idx4 = *indices.get_unchecked(i + 4);
-                let idx5 = *indices.get_unchecked(i + 5);
-                let idx6 = *indices.get_unchecked(i + 6);
-                let idx7 = *indices.get_unchecked(i + 7);
-                let bin0 = (*feature_values.get_unchecked(idx0) as usize).min(max_bin);
-                let bin1 = (*feature_values.get_unchecked(idx1) as usize).min(max_bin);
-                let bin2 = (*feature_values.get_unchecked(idx2) as usize).min(max_bin);
-                let bin3 = (*feature_values.get_unchecked(idx3) as usize).min(max_bin);
-                let bin4 = (*feature_values.get_unchecked(idx4) as usize).min(max_bin);
-                let bin5 = (*feature_values.get_unchecked(idx5) as usize).min(max_bin);
-                let bin6 = (*feature_values.get_unchecked(idx6) as usize).min(max_bin);
-                let bin7 = (*feature_values.get_unchecked(idx7) as usize).min(max_bin);
-                let ad0 = active_data.get_unchecked(i);
-                let ad1 = active_data.get_unchecked(i + 1);
-                let ad2 = active_data.get_unchecked(i + 2);
-                let ad3 = active_data.get_unchecked(i + 3);
-                let ad4 = active_data.get_unchecked(i + 4);
-                let ad5 = active_data.get_unchecked(i + 5);
-                let ad6 = active_data.get_unchecked(i + 6);
-                let ad7 = active_data.get_unchecked(i + 7);
-                *hist_grad.get_unchecked_mut(bin0) += ad0.grad as f64;
-                *hist_hess.get_unchecked_mut(bin0) += ad0.hess as f64;
-                *hist_y.get_unchecked_mut(bin0) += ad0.y as f64;
-                *hist_count.get_unchecked_mut(bin0) += 1.0;
-                *hist_grad.get_unchecked_mut(bin1) += ad1.grad as f64;
-                *hist_hess.get_unchecked_mut(bin1) += ad1.hess as f64;
-                *hist_y.get_unchecked_mut(bin1) += ad1.y as f64;
-                *hist_count.get_unchecked_mut(bin1) += 1.0;
-                *hist_grad.get_unchecked_mut(bin2) += ad2.grad as f64;
-                *hist_hess.get_unchecked_mut(bin2) += ad2.hess as f64;
-                *hist_y.get_unchecked_mut(bin2) += ad2.y as f64;
-                *hist_count.get_unchecked_mut(bin2) += 1.0;
-                *hist_grad.get_unchecked_mut(bin3) += ad3.grad as f64;
-                *hist_hess.get_unchecked_mut(bin3) += ad3.hess as f64;
-                *hist_y.get_unchecked_mut(bin3) += ad3.y as f64;
-                *hist_count.get_unchecked_mut(bin3) += 1.0;
-                *hist_grad.get_unchecked_mut(bin4) += ad4.grad as f64;
-                *hist_hess.get_unchecked_mut(bin4) += ad4.hess as f64;
-                *hist_y.get_unchecked_mut(bin4) += ad4.y as f64;
-                *hist_count.get_unchecked_mut(bin4) += 1.0;
-                *hist_grad.get_unchecked_mut(bin5) += ad5.grad as f64;
-                *hist_hess.get_unchecked_mut(bin5) += ad5.hess as f64;
-                *hist_y.get_unchecked_mut(bin5) += ad5.y as f64;
-                *hist_count.get_unchecked_mut(bin5) += 1.0;
-                *hist_grad.get_unchecked_mut(bin6) += ad6.grad as f64;
-                *hist_hess.get_unchecked_mut(bin6) += ad6.hess as f64;
-                *hist_y.get_unchecked_mut(bin6) += ad6.y as f64;
-                *hist_count.get_unchecked_mut(bin6) += 1.0;
-                *hist_grad.get_unchecked_mut(bin7) += ad7.grad as f64;
-                *hist_hess.get_unchecked_mut(bin7) += ad7.hess as f64;
-                *hist_y.get_unchecked_mut(bin7) += ad7.y as f64;
-                *hist_count.get_unchecked_mut(bin7) += 1.0;
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                {
+                    // Software prefetch: fetch values for upcoming indices
+                    // 16 iterations ahead is usually a good heuristic for modern CPUs
+                    if i + 16 < len {
+                        let next_idx = *indices.get_unchecked(i + 16) as usize;
+                        _mm_prefetch(
+                            (feature_values.get_unchecked(next_idx) as *const u8) as *const i8,
+                            _MM_HINT_T0,
+                        );
+                    }
+                }
+
+                for j in 0..8 {
+                    let idx = *indices.get_unchecked(i + j) as usize;
+                    let bin = (*feature_values.get_unchecked(idx) as usize).min(max_bin);
+                    let sample = samples.get_unchecked(i + j);
+                    let hist_bin = hist_bins.get_unchecked_mut(bin);
+
+                    hist_bin.grad += sample.grad;
+                    hist_bin.hess += sample.hess;
+                    hist_bin.y += sample.y;
+                    hist_bin.count += sample.count;
+                }
             }
             i += 8;
         }
 
         while i < len {
             unsafe {
-                let idx = *indices.get_unchecked(i);
+                let idx = *indices.get_unchecked(i) as usize;
                 let bin = (*feature_values.get_unchecked(idx) as usize).min(max_bin);
-                let ad = active_data.get_unchecked(i);
-                *hist_grad.get_unchecked_mut(bin) += ad.grad as f64;
-                *hist_hess.get_unchecked_mut(bin) += ad.hess as f64;
-                *hist_y.get_unchecked_mut(bin) += ad.y as f64;
-                *hist_count.get_unchecked_mut(bin) += 1.0;
+                let sample = samples.get_unchecked(i);
+                let hist_bin = hist_bins.get_unchecked_mut(bin);
+
+                hist_bin.grad += sample.grad;
+                hist_bin.hess += sample.hess;
+                hist_bin.y += sample.y;
+                hist_bin.count += sample.count;
+            }
+            i += 1;
+        }
+
+        // Final sum update
+        let mut s = BinData::default();
+        for b in hist_bins.iter() {
+            s.grad += b.grad;
+            s.hess += b.hess;
+            s.y += b.y;
+            s.count += b.count;
+        }
+        out.sums = TotalSums {
+            grad: s.grad,
+            hess: s.hess,
+            y: s.y,
+            count: s.count,
+        };
+    }
+
+    /// OPTIMIZATION: Multi-feature histogram kernel (Pass 2 of Double-Pass)
+    /// Processes 4 histograms using pre-gathered bin indices.
+    /// This loop is 100% linear and cache-friendly.
+    pub fn build_multi_histogram_4x(
+        &self,
+        active_data: &ActiveData,
+        n_bins_per_feat: &[usize; 4],
+        pre_gathered_bins: &[u8],        // [u8; 4] per sample
+        outputs: &mut [CachedHistogram], // Expects exactly 4 histograms
+    ) {
+        debug_assert_eq!(outputs.len(), 4);
+        let len = active_data.samples.len();
+        debug_assert!(pre_gathered_bins.len() >= len * 4);
+
+        for i in 0..4 {
+            outputs[i].reset(n_bins_per_feat[i]);
+        }
+
+        let samples = active_data;
+
+        let mut i = 0;
+        // Hot loop: 100% linear access to samples and pre_gathered_bins
+        while i + 4 <= len {
+            unsafe {
+                for j in 0..4 {
+                    let sample = samples.as_m128_ptr().add(i + j);
+                    let bins_ptr = pre_gathered_bins.as_ptr().add((i + j) * 4);
+
+                    let bin0 = *bins_ptr as usize;
+                    let bin1 = *bins_ptr.add(1) as usize;
+                    let bin2 = *bins_ptr.add(2) as usize;
+                    let bin3 = *bins_ptr.add(3) as usize;
+
+                    let s_v = _mm_load_ps(sample as *const f32);
+
+                    let b0_ptr = outputs[0].bins.as_mut_ptr().add(bin0) as *mut f32;
+                    let b1_ptr = outputs[1].bins.as_mut_ptr().add(bin1) as *mut f32;
+                    let b2_ptr = outputs[2].bins.as_mut_ptr().add(bin2) as *mut f32;
+                    let b3_ptr = outputs[3].bins.as_mut_ptr().add(bin3) as *mut f32;
+
+                    // SIMD Accumulation: 4 additions in 1 instruction
+                    _mm_store_ps(b0_ptr, _mm_add_ps(_mm_load_ps(b0_ptr), s_v));
+                    _mm_store_ps(b1_ptr, _mm_add_ps(_mm_load_ps(b1_ptr), s_v));
+                    _mm_store_ps(b2_ptr, _mm_add_ps(_mm_load_ps(b2_ptr), s_v));
+                    _mm_store_ps(b3_ptr, _mm_add_ps(_mm_load_ps(b3_ptr), s_v));
+                }
+            }
+            i += 4;
+        }
+
+        // Remainder
+        while i < len {
+            unsafe {
+                let sample = samples.samples.get_unchecked(i).as_m128();
+                let bins_ptr = pre_gathered_bins.as_ptr().add(i * 4);
+
+                let bin0 = *bins_ptr as usize;
+                let bin1 = *bins_ptr.add(1) as usize;
+                let bin2 = *bins_ptr.add(2) as usize;
+                let bin3 = *bins_ptr.add(3) as usize;
+
+                let b0_ptr = outputs[0].bins.as_mut_ptr().add(bin0) as *mut f32;
+                let b1_ptr = outputs[1].bins.as_mut_ptr().add(bin1) as *mut f32;
+                let b2_ptr = outputs[2].bins.as_mut_ptr().add(bin2) as *mut f32;
+                let b3_ptr = outputs[3].bins.as_mut_ptr().add(bin3) as *mut f32;
+
+                _mm_store_ps(b0_ptr, _mm_add_ps(_mm_load_ps(b0_ptr), sample));
+                _mm_store_ps(b1_ptr, _mm_add_ps(_mm_load_ps(b1_ptr), sample));
+                _mm_store_ps(b2_ptr, _mm_add_ps(_mm_load_ps(b2_ptr), sample));
+                _mm_store_ps(b3_ptr, _mm_add_ps(_mm_load_ps(b3_ptr), sample));
+            }
+            i += 1;
+        }
+
+        // Final sum update for all 4 histograms
+        for hist in outputs.iter_mut() {
+            let mut s = BinData::default();
+            for b in hist.bins.iter() {
+                s.grad += b.grad;
+                s.hess += b.hess;
+                s.y += b.y;
+                s.count += b.count;
+            }
+            hist.sums = TotalSums {
+                grad: s.grad,
+                hess: s.hess,
+                y: s.y,
+                count: s.count,
+            };
+        }
+    }
+
+    /// Gathers bin indices for 4 features into a compact [u8; 4] buffer.
+    /// This is Pass 1 of the Double-Pass histogram strategy.
+    pub fn gather_bins_4x(
+        &self,
+        feature_indices: &[usize; 4],
+        indices: &[u32],
+        n_bins_per_feat: &[usize; 4],
+        out_bins: &mut [u8], // Must be at least indices.len() * 4
+    ) {
+        let len = indices.len();
+        debug_assert!(out_bins.len() >= len * 4);
+
+        let fv0 = self.get_feature_values(feature_indices[0]);
+        let fv1 = self.get_feature_values(feature_indices[1]);
+        let fv2 = self.get_feature_values(feature_indices[2]);
+        let fv3 = self.get_feature_values(feature_indices[3]);
+
+        let max0 = (n_bins_per_feat[0] - 1) as u8;
+        let max1 = (n_bins_per_feat[1] - 1) as u8;
+        let max2 = (n_bins_per_feat[2] - 1) as u8;
+        let max3 = (n_bins_per_feat[3] - 1) as u8;
+
+        let mut i = 0;
+        while i + 4 <= len {
+            unsafe {
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                {
+                    if i + 16 < len {
+                        let next_idx = *indices.get_unchecked(i + 16) as usize;
+                        _mm_prefetch(
+                            (fv0.get_unchecked(next_idx) as *const u8) as *const i8,
+                            _MM_HINT_T0,
+                        );
+                        _mm_prefetch(
+                            (fv1.get_unchecked(next_idx) as *const u8) as *const i8,
+                            _MM_HINT_T0,
+                        );
+                        _mm_prefetch(
+                            (fv2.get_unchecked(next_idx) as *const u8) as *const i8,
+                            _MM_HINT_T0,
+                        );
+                        _mm_prefetch(
+                            (fv3.get_unchecked(next_idx) as *const u8) as *const i8,
+                            _MM_HINT_T0,
+                        );
+                    }
+                }
+
+                for j in 0..4 {
+                    let idx = *indices.get_unchecked(i + j) as usize;
+                    let b0 = (*fv0.get_unchecked(idx)).min(max0);
+                    let b1 = (*fv1.get_unchecked(idx)).min(max1);
+                    let b2 = (*fv2.get_unchecked(idx)).min(max2);
+                    let b3 = (*fv3.get_unchecked(idx)).min(max3);
+
+                    let out_ptr = out_bins.as_mut_ptr().add((i + j) * 4);
+                    *out_ptr = b0;
+                    *out_ptr.add(1) = b1;
+                    *out_ptr.add(2) = b2;
+                    *out_ptr.add(3) = b3;
+                }
+            }
+            i += 4;
+        }
+
+        while i < len {
+            unsafe {
+                let idx = *indices.get_unchecked(i) as usize;
+                let b0 = (*fv0.get_unchecked(idx)).min(max0);
+                let b1 = (*fv1.get_unchecked(idx)).min(max1);
+                let b2 = (*fv2.get_unchecked(idx)).min(max2);
+                let b3 = (*fv3.get_unchecked(idx)).min(max3);
+
+                let out_ptr = out_bins.as_mut_ptr().add(i * 4);
+                *out_ptr = b0;
+                *out_ptr.add(1) = b1;
+                *out_ptr.add(2) = b2;
+                *out_ptr.add(3) = b3;
             }
             i += 1;
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct ActiveData {
-    pub grad: f32,
-    pub hess: f32,
-    pub y: u8,
+/// Gathers grad, hess, and y values into interleaved AoS buffers.
+pub fn gather_active_data(
+    indices: &[u32],
+    grad: &[f32],
+    hess: &[f32],
+    y: &[u8],
+    out: &mut ActiveData,
+) {
+    let n = indices.len();
+    out.resize(n);
+
+    // Parallelize larger gather operations using ForkUnion
+    if n > 16384 {
+        use crate::fork_parallel::pfor_indexed;
+        let out_ptr = out.samples.as_mut_ptr() as usize;
+
+        let grad_ptr = grad.as_ptr() as usize;
+        let hess_ptr = hess.as_ptr() as usize;
+        let y_ptr = y.as_ptr() as usize;
+        let indices_ptr = indices.as_ptr() as usize;
+
+        let n_chunks = (n / 2048).max(1).min(num_cpus::get() * 4);
+        let chunk_size = (n + n_chunks - 1) / n_chunks;
+
+        pfor_indexed(n_chunks, move |chunk_idx| {
+            let start = chunk_idx * chunk_size;
+            let end = ((chunk_idx + 1) * chunk_size).min(n);
+            if start >= end {
+                return;
+            }
+
+            unsafe {
+                let chunk_indices_ptr = (indices_ptr as *const u32).add(start);
+                let out_samples_ptr = (out_ptr as *mut SampleData).add(start);
+
+                // Scalar gather for now - can optimize with AVX2 later
+                for j in 0..(end - start) {
+                    let idx = *chunk_indices_ptr.add(j) as usize;
+                    *out_samples_ptr.add(j) = SampleData {
+                        grad: *(grad_ptr as *const f32).add(idx),
+                        hess: *(hess_ptr as *const f32).add(idx),
+                        y: *(y_ptr as *const u8).add(idx) as f32,
+                        count: 1.0,
+                    };
+                }
+            }
+        });
+    } else {
+        // Sequential path for small nodes
+        for (i, &idx) in indices.iter().enumerate() {
+            let idx = idx as usize;
+            unsafe {
+                out.samples[i] = SampleData {
+                    grad: *grad.get_unchecked(idx),
+                    hess: *hess.get_unchecked(idx),
+                    y: *y.get_unchecked(idx) as f32,
+                    count: 1.0,
+                };
+            }
+        }
+    }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct TotalSums {
+    pub grad: f32,
+    pub hess: f32,
+    pub y: f32,
+    pub count: f32,
+}
+
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct BinData {
+    pub grad: f32,
+    pub hess: f32,
+    pub y: f32,
+    pub count: f32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CachedHistogram {
-    pub grad: Vec<f64>,
-    pub hess: Vec<f64>,
-    pub y: Vec<f64>,
-    pub count: Vec<f64>,
+    pub bins: Vec<BinData>,
+    pub sums: TotalSums,
 }
 
 impl CachedHistogram {
-    pub fn new(grad: Vec<f64>, hess: Vec<f64>, y: Vec<f64>, count: Vec<f64>) -> Self {
-        Self {
-            grad,
-            hess,
-            y,
-            count,
+    pub fn new(bins: Vec<BinData>) -> Self {
+        let mut s = BinData::default();
+        for b in bins.iter() {
+            s.grad += b.grad;
+            s.hess += b.hess;
+            s.y += b.y;
+            s.count += b.count;
         }
+        let sums = TotalSums {
+            grad: s.grad,
+            hess: s.hess,
+            y: s.y,
+            count: s.count,
+        };
+        Self { bins, sums }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.grad.len()
+        self.bins.len()
     }
 
-    #[inline]
-    pub fn as_slices(&self) -> (&[f64], &[f64], &[f64], &[f64]) {
-        (&self.grad, &self.hess, &self.y, &self.count)
-    }
-
-    /// Reset all histogram bins to zero, resizing if necessary
     #[inline]
     pub fn reset(&mut self, n_bins: usize) {
-        if self.grad.len() == n_bins {
-            self.grad.fill(0.0);
-            self.hess.fill(0.0);
-            self.y.fill(0.0);
-            self.count.fill(0.0);
+        if self.bins.len() == n_bins {
+            self.bins.fill(BinData::default());
         } else {
-            self.grad = vec![0.0; n_bins];
-            self.hess = vec![0.0; n_bins];
-            self.y = vec![0.0; n_bins];
-            self.count = vec![0.0; n_bins];
+            self.bins = vec![BinData::default(); n_bins];
         }
+        self.sums = TotalSums::default();
     }
 
-    pub fn build_vectorized(
-        transposed_data: &TransposedData,
-        y_u8: &[u8],
-        grad: &[f32],
-        hess: &[f32],
-        indices: &[usize],
-        feature_idx: usize,
-        n_bins: usize,
-    ) -> Self {
-        transposed_data.build_histogram_vectorized(feature_idx, indices, grad, hess, y_u8, n_bins)
-    }
-
-    /// OPTIMIZED: Build into a pre-allocated CachedHistogram buffer
-    pub fn build_vectorized_into(
-        transposed_data: &TransposedData,
-        y: &ArrayView1<f64>,
-        grad: &ArrayView1<f64>,
-        hess: &ArrayView1<f64>,
-        indices: &[usize],
-        feature_idx: usize,
-        n_bins: usize,
-        out: &mut Self,
-    ) {
-        transposed_data.build_histogram_into(feature_idx, indices, grad, hess, y, n_bins, out);
-    }
-
-    /// Fast subtraction using unsafe array access (parent - sibling = other_child)
-    #[inline]
-    pub fn subtract(&self, other: &Self) -> Self {
-        let n = self.grad.len();
-        let mut grad_out = vec![0.0; n];
-        let mut hess_out = vec![0.0; n];
-        let mut y_out = vec![0.0; n];
-        let mut count_out = vec![0.0; n];
-        let grad_self = &self.grad;
-        let hess_self = &self.hess;
-        let y_self = &self.y;
-        let count_self = &self.count;
-        let grad_other = &other.grad;
-        let hess_other = &other.hess;
-        let y_other = &other.y;
-        let count_other = &other.count;
-        // 4x unrolled subtraction with unsafe access
-        let mut i = 0;
-        while i + 4 <= n {
-            unsafe {
-                *grad_out.get_unchecked_mut(i) =
-                    *grad_self.get_unchecked(i) - *grad_other.get_unchecked(i);
-                *hess_out.get_unchecked_mut(i) =
-                    *hess_self.get_unchecked(i) - *hess_other.get_unchecked(i);
-                *y_out.get_unchecked_mut(i) = *y_self.get_unchecked(i) - *y_other.get_unchecked(i);
-                *count_out.get_unchecked_mut(i) =
-                    *count_self.get_unchecked(i) - *count_other.get_unchecked(i);
-                *grad_out.get_unchecked_mut(i + 1) =
-                    *grad_self.get_unchecked(i + 1) - *grad_other.get_unchecked(i + 1);
-                *hess_out.get_unchecked_mut(i + 1) =
-                    *hess_self.get_unchecked(i + 1) - *hess_other.get_unchecked(i + 1);
-                *y_out.get_unchecked_mut(i + 1) =
-                    *y_self.get_unchecked(i + 1) - *y_other.get_unchecked(i + 1);
-                *count_out.get_unchecked_mut(i + 1) =
-                    *count_self.get_unchecked(i + 1) - *count_other.get_unchecked(i + 1);
-                *grad_out.get_unchecked_mut(i + 2) =
-                    *grad_self.get_unchecked(i + 2) - *grad_other.get_unchecked(i + 2);
-                *hess_out.get_unchecked_mut(i + 2) =
-                    *hess_self.get_unchecked(i + 2) - *hess_other.get_unchecked(i + 2);
-                *y_out.get_unchecked_mut(i + 2) =
-                    *y_self.get_unchecked(i + 2) - *y_other.get_unchecked(i + 2);
-                *count_out.get_unchecked_mut(i + 2) =
-                    *count_self.get_unchecked(i + 2) - *count_other.get_unchecked(i + 2);
-                *grad_out.get_unchecked_mut(i + 3) =
-                    *grad_self.get_unchecked(i + 3) - *grad_other.get_unchecked(i + 3);
-                *hess_out.get_unchecked_mut(i + 3) =
-                    *hess_self.get_unchecked(i + 3) - *hess_other.get_unchecked(i + 3);
-                *y_out.get_unchecked_mut(i + 3) =
-                    *y_self.get_unchecked(i + 3) - *y_other.get_unchecked(i + 3);
-                *count_out.get_unchecked_mut(i + 3) =
-                    *count_self.get_unchecked(i + 3) - *count_other.get_unchecked(i + 3);
-            }
-            i += 4;
-        }
-
-        // Handle remaining
-        while i < n {
-            unsafe {
-                *grad_out.get_unchecked_mut(i) =
-                    *grad_self.get_unchecked(i) - *grad_other.get_unchecked(i);
-                *hess_out.get_unchecked_mut(i) =
-                    *hess_self.get_unchecked(i) - *hess_other.get_unchecked(i);
-                *y_out.get_unchecked_mut(i) = *y_self.get_unchecked(i) - *y_other.get_unchecked(i);
-                *count_out.get_unchecked_mut(i) =
-                    *count_self.get_unchecked(i) - *count_other.get_unchecked(i);
-            }
-            i += 1;
-        }
-
-        Self {
-            grad: grad_out,
-            hess: hess_out,
-            y: y_out,
-            count: count_out,
-        }
-    }
-
-    /// Zero-allocation subtraction: writes (self - other) into `out`.
     #[inline]
     pub fn subtract_into(&self, other: &Self, out: &mut Self) {
-        let n = self.grad.len();
+        let n = self.bins.len();
         out.reset(n);
 
-        let out_grad = &mut out.grad;
-        let out_hess = &mut out.hess;
-        let out_y = &mut out.y;
-        let out_count = &mut out.count;
-
-        let grad_self = &self.grad;
-        let hess_self = &self.hess;
-        let y_self = &self.y;
-        let count_self = &self.count;
-
-        let grad_other = &other.grad;
-        let hess_other = &other.hess;
-        let y_other = &other.y;
-        let count_other = &other.count;
-
         let mut i = 0;
+        let self_bins = &self.bins;
+        let other_bins = &other.bins;
+        let out_bins = &mut out.bins;
+
         while i + 4 <= n {
             unsafe {
-                *out_grad.get_unchecked_mut(i) =
-                    *grad_self.get_unchecked(i) - *grad_other.get_unchecked(i);
-                *out_hess.get_unchecked_mut(i) =
-                    *hess_self.get_unchecked(i) - *hess_other.get_unchecked(i);
-                *out_y.get_unchecked_mut(i) = *y_self.get_unchecked(i) - *y_other.get_unchecked(i);
-                *out_count.get_unchecked_mut(i) =
-                    *count_self.get_unchecked(i) - *count_other.get_unchecked(i);
-                *out_grad.get_unchecked_mut(i + 1) =
-                    *grad_self.get_unchecked(i + 1) - *grad_other.get_unchecked(i + 1);
-                *out_hess.get_unchecked_mut(i + 1) =
-                    *hess_self.get_unchecked(i + 1) - *hess_other.get_unchecked(i + 1);
-                *out_y.get_unchecked_mut(i + 1) =
-                    *y_self.get_unchecked(i + 1) - *y_other.get_unchecked(i + 1);
-                *out_count.get_unchecked_mut(i + 1) =
-                    *count_self.get_unchecked(i + 1) - *count_other.get_unchecked(i + 1);
-                *out_grad.get_unchecked_mut(i + 2) =
-                    *grad_self.get_unchecked(i + 2) - *grad_other.get_unchecked(i + 2);
-                *out_hess.get_unchecked_mut(i + 2) =
-                    *hess_self.get_unchecked(i + 2) - *hess_other.get_unchecked(i + 2);
-                *out_y.get_unchecked_mut(i + 2) =
-                    *y_self.get_unchecked(i + 2) - *y_other.get_unchecked(i + 2);
-                *out_count.get_unchecked_mut(i + 2) =
-                    *count_self.get_unchecked(i + 2) - *count_other.get_unchecked(i + 2);
-                *out_grad.get_unchecked_mut(i + 3) =
-                    *grad_self.get_unchecked(i + 3) - *grad_other.get_unchecked(i + 3);
-                *out_hess.get_unchecked_mut(i + 3) =
-                    *hess_self.get_unchecked(i + 3) - *hess_other.get_unchecked(i + 3);
-                *out_y.get_unchecked_mut(i + 3) =
-                    *y_self.get_unchecked(i + 3) - *y_other.get_unchecked(i + 3);
-                *out_count.get_unchecked_mut(i + 3) =
-                    *count_self.get_unchecked(i + 3) - *count_other.get_unchecked(i + 3);
+                let s0 = self_bins.get_unchecked(i);
+                let o0 = other_bins.get_unchecked(i);
+                let d0 = out_bins.get_unchecked_mut(i);
+                d0.grad = s0.grad - o0.grad;
+                d0.hess = s0.hess - o0.hess;
+                d0.y = s0.y - o0.y;
+                d0.count = s0.count - o0.count;
+
+                let s1 = self_bins.get_unchecked(i + 1);
+                let o1 = other_bins.get_unchecked(i + 1);
+                let d1 = out_bins.get_unchecked_mut(i + 1);
+                d1.grad = s1.grad - o1.grad;
+                d1.hess = s1.hess - o1.hess;
+                d1.y = s1.y - o1.y;
+                d1.count = s1.count - o1.count;
+
+                let s2 = self_bins.get_unchecked(i + 2);
+                let o2 = other_bins.get_unchecked(i + 2);
+                let d2 = out_bins.get_unchecked_mut(i + 2);
+                d2.grad = s2.grad - o2.grad;
+                d2.hess = s2.hess - o2.hess;
+                d2.y = s2.y - o2.y;
+                d2.count = s2.count - o2.count;
+
+                let s3 = self_bins.get_unchecked(i + 3);
+                let o3 = other_bins.get_unchecked(i + 3);
+                let d3 = out_bins.get_unchecked_mut(i + 3);
+                d3.grad = s3.grad - o3.grad;
+                d3.hess = s3.hess - o3.hess;
+                d3.y = s3.y - o3.y;
+                d3.count = s3.count - o3.count;
             }
             i += 4;
         }
 
         while i < n {
-            unsafe {
-                *out_grad.get_unchecked_mut(i) =
-                    *grad_self.get_unchecked(i) - *grad_other.get_unchecked(i);
-                *out_hess.get_unchecked_mut(i) =
-                    *hess_self.get_unchecked(i) - *hess_other.get_unchecked(i);
-                *out_y.get_unchecked_mut(i) = *y_self.get_unchecked(i) - *y_other.get_unchecked(i);
-                *out_count.get_unchecked_mut(i) =
-                    *count_self.get_unchecked(i) - *count_other.get_unchecked(i);
-            }
+            let s = &self_bins[i];
+            let o = &other_bins[i];
+            let d = &mut out_bins[i];
+            d.grad = s.grad - o.grad;
+            d.hess = s.hess - o.hess;
+            d.y = s.y - o.y;
+            d.count = s.count - o.count;
             i += 1;
         }
+
+        out.sums.grad = self.sums.grad - other.sums.grad;
+        out.sums.hess = self.sums.hess - other.sums.hess;
+        out.sums.y = self.sums.y - other.sums.y;
+        out.sums.count = self.sums.count - other.sums.count;
     }
 }

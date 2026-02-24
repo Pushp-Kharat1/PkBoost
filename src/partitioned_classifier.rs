@@ -3,7 +3,6 @@
 
 use crate::model::OptimizedPKBoostShannon;
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use rayon::prelude::*;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +50,7 @@ pub struct PartitionedClassifier {
     partition_error_ema: Vec<f64>,
     partition_sample_counts: Vec<usize>,
     specialist_weights: Vec<f64>,
+    #[allow(dead_code)]
     use_weighted_ensemble: bool,
 }
 
@@ -119,28 +119,26 @@ impl PartitionedClassifier {
             .map(|c| c.iter().map(|&v| v as f32).collect())
             .collect();
 
-        (0..x.nrows())
-            .into_par_iter()
-            .map(|i| {
-                let sample_f32: Vec<f32> = x.row(i).iter().map(|&v| v as f32).collect();
+        let n_samples = x.nrows();
+        crate::fork_parallel::pfor_range_map(0..n_samples, |i| {
+            let sample_f32: Vec<f32> = x.row(i).iter().map(|&v| v as f32).collect();
 
-                let mut min_idx = 0;
-                let mut min_dist = f64::INFINITY;
+            let mut min_idx = 0;
+            let mut min_dist = f64::INFINITY;
 
-                for (j, centroid_f32) in centroids_f32.iter().enumerate() {
-                    let dist = f32::sqeuclidean(&sample_f32[..], &centroid_f32[..])
-                        .map(|d| d as f64)
-                        .unwrap_or(f64::INFINITY);
+            for (j, centroid_f32) in centroids_f32.iter().enumerate() {
+                let dist = f32::sqeuclidean(&sample_f32[..], &centroid_f32[..])
+                    .map(|d| d as f64)
+                    .unwrap_or(f64::INFINITY);
 
-                    if dist < min_dist {
-                        min_dist = dist;
-                        min_idx = j;
-                    }
+                if dist < min_dist {
+                    min_dist = dist;
+                    min_idx = j;
                 }
+            }
 
-                min_idx
-            })
-            .collect()
+            min_idx
+        })
     }
 
     pub fn partition_data(
@@ -216,10 +214,9 @@ impl PartitionedClassifier {
             println!("Training {} specialists...", self.config.n_partitions);
         }
 
-        // Train specialists in parallel
-        let specialists: Vec<_> = (0..self.config.n_partitions)
-            .into_par_iter()
-            .map(|partition_id| {
+        // Train specialists in parallel using ForkUnion
+        let specialists =
+            crate::fork_parallel::pfor_range_map(0..self.config.n_partitions, |partition_id| {
                 if let Some((indices, y_part)) = partition_data.get(&partition_id) {
                     if indices.len() < 10 {
                         return Err(format!("Partition {} has insufficient data", partition_id));
@@ -245,7 +242,10 @@ impl PartitionedClassifier {
                 } else {
                     Err(format!("No data for partition {}", partition_id))
                 }
-            })
+            });
+
+        let specialists: Vec<OptimizedPKBoostShannon> = specialists
+            .into_iter()
             .collect::<Result<Vec<_>, String>>()?;
 
         self.specialists = specialists;

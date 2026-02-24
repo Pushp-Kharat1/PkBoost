@@ -75,10 +75,11 @@ impl<T> ParallelVec<T> {
 /// ```ignore
 /// let results = pfor_map(&data, |item| item * 2);
 /// ```
+/// Parallel map over a slice using ForkUnion's static scheduling.
 pub fn pfor_map<T, R, F>(items: &[T], f: F) -> Vec<R>
 where
     T: Sync,
-    R: Send + Default + Clone,
+    R: Send,
     F: Fn(&T) -> R + Sync,
 {
     let n = items.len();
@@ -86,32 +87,36 @@ where
         return Vec::new();
     }
     if n < 64 {
-        return items.iter().map(|item| f(item)).collect();
+        return items.iter().map(f).collect();
     }
 
-    let results = ParallelVec::new(vec![R::default(); n]);
+    use std::mem::MaybeUninit;
+    let mut results = Vec::with_capacity(n);
+    unsafe { results.set_len(n) };
+    let results_ptr = SendPtr(results.as_mut_ptr() as *mut MaybeUninit<R>);
 
     with_pool(|pool| {
         let num_threads = pool.threads().min(n);
         let chunk_size = (n + num_threads - 1) / num_threads;
+        let results_ptr = results_ptr; // Shadow OUTSIDE the closure to ensure Sync capture
         pool.for_n(num_threads, |prong| {
             let start = prong.task_index * chunk_size;
             let end = (start + chunk_size).min(n);
             for idx in start..end {
-                // SAFETY: each thread owns a disjoint chunk of indices.
-                unsafe { results.write(idx, f(&items[idx])) };
+                unsafe {
+                    (*results_ptr.addr().add(idx)).write(f(&items[idx]));
+                }
             }
         });
     });
 
-    results.into_inner()
+    results
 }
 
 /// Parallel map over a range using ForkUnion.
-/// Best for index-based workloads where you need the index.
 pub fn pfor_range_map<R, F>(range: std::ops::Range<usize>, f: F) -> Vec<R>
 where
-    R: Send + Default + Clone,
+    R: Send,
     F: Fn(usize) -> R + Sync,
 {
     let n = range.len();
@@ -120,26 +125,31 @@ where
         return Vec::new();
     }
     if n < 64 {
-        return range.map(|i| f(i)).collect();
+        return range.map(f).collect();
     }
 
-    let results = ParallelVec::new(vec![R::default(); n]);
+    use std::mem::MaybeUninit;
+    let mut results = Vec::with_capacity(n);
+    unsafe { results.set_len(n) };
+    let results_ptr = SendPtr(results.as_mut_ptr() as *mut MaybeUninit<R>);
 
     with_pool(|pool| {
         let num_threads = pool.threads().min(n);
         let chunk_size = (n + num_threads - 1) / num_threads;
+        let results_ptr = results_ptr; // Shadow OUTSIDE the closure to ensure Sync capture
         pool.for_n(num_threads, |prong| {
             let local_start = prong.task_index * chunk_size;
             let local_end = (local_start + chunk_size).min(n);
             for local_idx in local_start..local_end {
                 let global_idx = start + local_idx;
-                // SAFETY: disjoint chunks.
-                unsafe { results.write(local_idx, f(global_idx)) };
+                unsafe {
+                    (*results_ptr.addr().add(local_idx)).write(f(global_idx));
+                }
             }
         });
     });
 
-    results.into_inner()
+    results
 }
 
 /// Parallel map using dynamic work-stealing.
@@ -147,7 +157,7 @@ where
 pub fn pfor_dynamic_map<T, R, F>(items: &[T], f: F) -> Vec<R>
 where
     T: Sync,
-    R: Send + Default + Clone,
+    R: Send,
     F: Fn(&T) -> R + Sync,
 {
     let n = items.len();
@@ -155,34 +165,38 @@ where
         return Vec::new();
     }
     if n < 64 {
-        return items.iter().map(|item| f(item)).collect();
+        return items.iter().map(f).collect();
     }
 
-    let results = ParallelVec::new(vec![R::default(); n]);
+    use std::mem::MaybeUninit;
+    let mut results = Vec::with_capacity(n);
+    unsafe { results.set_len(n) };
+    let results_ptr = SendPtr(results.as_mut_ptr() as *mut MaybeUninit<R>);
 
     with_pool(|pool| {
         let num_threads = pool.threads().min(n);
         let chunk_size = (n + num_threads - 1) / num_threads;
+        let results_ptr = results_ptr; // Shadow OUTSIDE
         pool.for_n_dynamic(num_threads, |prong| {
             let start = prong.task_index * chunk_size;
             let end = (start + chunk_size).min(n);
             for idx in start..end {
-                // SAFETY: disjoint chunks.
-                unsafe { results.write(idx, f(&items[idx])) };
+                unsafe {
+                    (*results_ptr.addr().add(idx)).write(f(&items[idx]));
+                }
             }
         });
     });
 
-    results.into_inner()
+    results
 }
 
 /// Parallel zip-map over two slices using ForkUnion.
-/// Best for operations like histogram subtraction.
 pub fn pfor_zip_map<T, U, R, F>(a: &[T], b: &[U], f: F) -> Vec<R>
 where
     T: Sync,
     U: Sync,
-    R: Send + Default + Clone,
+    R: Send,
     F: Fn(&T, &U) -> R + Sync,
 {
     let n = a.len().min(b.len());
@@ -193,22 +207,27 @@ where
         return a.iter().zip(b.iter()).map(|(x, y)| f(x, y)).collect();
     }
 
-    let results = ParallelVec::new(vec![R::default(); n]);
+    use std::mem::MaybeUninit;
+    let mut results = Vec::with_capacity(n);
+    unsafe { results.set_len(n) };
+    let results_ptr = SendPtr(results.as_mut_ptr() as *mut MaybeUninit<R>);
 
     with_pool(|pool| {
         let num_threads = pool.threads().min(n);
         let chunk_size = (n + num_threads - 1) / num_threads;
+        let results_ptr = results_ptr; // Shadow OUTSIDE
         pool.for_n(num_threads, |prong| {
             let start = prong.task_index * chunk_size;
             let end = (start + chunk_size).min(n);
             for idx in start..end {
-                // SAFETY: disjoint chunks.
-                unsafe { results.write(idx, f(&a[idx], &b[idx])) };
+                unsafe {
+                    (*results_ptr.addr().add(idx)).write(f(&a[idx], &b[idx]));
+                }
             }
         });
     });
 
-    results.into_inner()
+    results
 }
 
 /// Parallel for-each using ForkUnion with index.
@@ -468,7 +487,7 @@ impl<T> std::ops::DerefMut for CacheAligned<T> {
 // ---------------------------------------------------------------------------
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct SendPtr<T>(pub *mut T);
 
 impl<T> SendPtr<T> {
@@ -480,6 +499,14 @@ impl<T> SendPtr<T> {
 
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
+
+impl<T> Clone for SendPtr<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for SendPtr<T> {}
 
 // ---------------------------------------------------------------------------
 // Tests

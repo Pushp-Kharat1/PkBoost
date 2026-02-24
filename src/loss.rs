@@ -1,9 +1,9 @@
 /// Loss functions for PKBoost
 /// Provides gradient and hessian calculations for Newton-Raphson optimization
-use rayon::prelude::*;
+use crate::fork_parallel::{pfor_zip4_for_each_mut, pfor_zip_map};
 use serde::{Deserialize, Serialize};
 
-/// Parallel threshold - avoid Rayon overhead for small arrays
+/// Parallel threshold - avoid multi-threading overhead for small arrays
 const PARALLEL_THRESHOLD: usize = 10000;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ impl OptimizedShannonLoss {
     }
 
     /// OPTIMIZED: Fused gradient and hessian calculation
-    /// Computes both in a single pass, avoiding redundant sigmoid calculations
+    /// Computes both in a single pass using ForkUnion
     #[inline]
     pub fn gradient_hessian(
         &self,
@@ -32,18 +32,14 @@ impl OptimizedShannonLoss {
         let n = y_true.len();
 
         if n >= PARALLEL_THRESHOLD {
-            // Parallel path for large arrays
-            let results: Vec<(f64, f64)> = y_pred
-                .par_iter()
-                .zip(y_true.par_iter())
-                .map(|(&pred, &true_y)| {
-                    let prob = 1.0 / (1.0 + (-pred).exp());
-                    let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
-                    let grad = weight * (prob - true_y);
-                    let hess = weight * prob * (1.0 - prob).max(1e-6);
-                    (grad, hess)
-                })
-                .collect();
+            // Parallel path for large arrays using ForkUnion
+            let results = pfor_zip_map(y_pred, y_true, |&pred, &true_y| {
+                let prob = 1.0 / (1.0 + (-pred).exp());
+                let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
+                let grad = weight * (prob - true_y);
+                let hess = weight * prob * (1.0 - prob).max(1e-6);
+                (grad, hess)
+            });
 
             let mut grad = Vec::with_capacity(n);
             let mut hess = Vec::with_capacity(n);
@@ -53,7 +49,7 @@ impl OptimizedShannonLoss {
             }
             (grad, hess)
         } else {
-            // Sequential path for small arrays - avoids Rayon overhead
+            // Sequential path for small arrays
             let mut grad = Vec::with_capacity(n);
             let mut hess = Vec::with_capacity(n);
 
@@ -68,7 +64,6 @@ impl OptimizedShannonLoss {
     }
 
     /// OPTIMIZED: Write gradients and hessians into pre-allocated buffers
-    /// Avoids allocating 2 new Vecs per boosting iteration
     #[inline]
     pub fn gradient_hessian_into(
         &self,
@@ -83,18 +78,18 @@ impl OptimizedShannonLoss {
         debug_assert_eq!(hess_out.len(), n);
 
         if n >= PARALLEL_THRESHOLD {
-            // Parallel path: write directly into output slices
-            grad_out
-                .par_iter_mut()
-                .zip(hess_out.par_iter_mut())
-                .zip(y_pred.par_iter())
-                .zip(y_true.par_iter())
-                .for_each(|(((g, h), &pred), &true_y)| {
+            pfor_zip4_for_each_mut(
+                grad_out,
+                hess_out,
+                y_pred,
+                y_true,
+                |g, h, &pred, &true_y| {
                     let prob = 1.0 / (1.0 + (-pred).exp());
                     let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
                     *g = weight * (prob - true_y);
                     *h = weight * prob * (1.0 - prob).max(1e-6);
-                });
+                },
+            );
         } else {
             for i in 0..n {
                 let prob = 1.0 / (1.0 + (-y_pred[i]).exp());
@@ -110,7 +105,6 @@ impl OptimizedShannonLoss {
     }
 
     /// OPTIMIZED: Write gradients/hessians directly as f32
-    /// Eliminates the f64→f32 cast loop and dual buffer overhead
     #[inline]
     pub fn gradient_hessian_into_f32(
         &self,
@@ -125,17 +119,18 @@ impl OptimizedShannonLoss {
         debug_assert_eq!(hess_out.len(), n);
 
         if n >= PARALLEL_THRESHOLD {
-            grad_out
-                .par_iter_mut()
-                .zip(hess_out.par_iter_mut())
-                .zip(y_pred.par_iter())
-                .zip(y_true.par_iter())
-                .for_each(|(((g, h), &pred), &true_y)| {
+            pfor_zip4_for_each_mut(
+                grad_out,
+                hess_out,
+                y_pred,
+                y_true,
+                |g, h, &pred, &true_y| {
                     let prob = 1.0_f64 / (1.0 + (-pred).exp());
                     let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
                     *g = (weight * (prob - true_y)) as f32;
                     *h = (weight * prob * (1.0 - prob).max(1e-6)) as f32;
-                });
+                },
+            );
         } else {
             for i in 0..n {
                 let prob = 1.0_f64 / (1.0 + (-y_pred[i]).exp());
@@ -162,10 +157,7 @@ impl OptimizedShannonLoss {
 
     pub fn sigmoid(&self, preds: &[f64]) -> Vec<f64> {
         if preds.len() >= PARALLEL_THRESHOLD {
-            preds
-                .par_iter()
-                .map(|&p| 1.0 / (1.0 + (-p).exp()))
-                .collect()
+            crate::fork_parallel::pfor_map(preds, |&p| 1.0 / (1.0 + (-p).exp()))
         } else {
             preds.iter().map(|&p| 1.0 / (1.0 + (-p).exp())).collect()
         }

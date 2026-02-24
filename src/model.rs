@@ -12,7 +12,6 @@ use crate::{
 };
 use ndarray::{Array1, ArrayView1, ArrayView2};
 use rand::prelude::*;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -267,7 +266,7 @@ fn compute_data_stats(x: ArrayView2<'_, f64>, y: &[f64]) -> DataStats {
     DataStats::from_slices(n_rows, n_cols, pos_count, missing_count, max_cardinality)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OptimizedPKBoostShannon {
     pub n_estimators: usize,
     pub learning_rate: f64,
@@ -416,8 +415,8 @@ impl OptimizedPKBoostShannon {
         // gradient_hessian_into_f32 computes in f64 internally, writes f32 directly
         let mut grad_f32 = vec![0.0f32; n_samples];
         let mut hess_f32 = vec![0.0f32; n_samples];
-        let all_sample_indices: Vec<usize> = (0..n_samples).collect();
-        let mut sample_indices: Vec<usize> = (0..n_samples).collect();
+        let all_sample_indices: Vec<u32> = (0..n_samples as u32).collect();
+        let mut sample_indices: Vec<u32> = (0..n_samples as u32).collect();
         let mut feature_indices: Vec<usize> = (0..n_features).collect();
         let mut tree_preds_buf = vec![0.0f64; n_samples];
         let mut bins_buf: Vec<usize> = Vec::with_capacity(n_features);
@@ -429,7 +428,7 @@ impl OptimizedPKBoostShannon {
             // stochastic gradient boosting - subsample rows (reuse pre-allocated buffer)
             let sample_size = (self.subsample * n_samples as f64) as usize;
             sample_indices.clear();
-            sample_indices.extend(0..n_samples);
+            sample_indices.extend(0..n_samples as u32);
             sample_indices.shuffle(&mut rng);
             sample_indices.truncate(sample_size);
 
@@ -551,7 +550,8 @@ impl OptimizedPKBoostShannon {
                 (val_transposed.as_ref(), val_preds.as_mut(), eval_set)
             {
                 let y_val_slice = y_val.as_slice().unwrap();
-                let val_sample_indices: Vec<usize> = (0..val_transposed_data.n_samples).collect();
+                let val_sample_indices: Vec<u32> =
+                    (0..val_transposed_data.n_samples as u32).collect();
                 let val_tree_preds = tree.predict_batch(val_transposed_data, &val_sample_indices);
 
                 // Sequential update — avoids Rayon dispatch for simple add
@@ -652,16 +652,16 @@ impl OptimizedPKBoostShannon {
         let x_proc = histogram_builder.transform(x);
         let transposed_data = TransposedData::from_binned(x_proc);
         let n_samples = transposed_data.n_samples;
-        let sample_indices: Vec<usize> = (0..n_samples).collect();
+        let sample_indices: Vec<u32> = (0..n_samples as u32).collect();
 
         let mut predictions = vec![self.base_score; n_samples];
 
         for tree in &self.trees {
             let tree_preds = tree.predict_batch(&transposed_data, &sample_indices);
             predictions
-                .par_iter_mut()
-                .zip(tree_preds.par_iter())
-                .for_each(|(current_pred, tree_pred)| {
+                .iter_mut()
+                .zip(tree_preds.iter())
+                .for_each(|(current_pred, &tree_pred)| {
                     *current_pred += self.learning_rate * tree_pred;
                 });
         }
@@ -688,8 +688,8 @@ impl OptimizedPKBoostShannon {
         for chunk in self.trees.chunks(TREE_CHUNK_SIZE) {
             for tree in chunk {
                 // Process all samples for this tree chunk
-                for i in 0..n_samples {
-                    predictions[i] +=
+                for i in 0..n_samples as u32 {
+                    predictions[i as usize] +=
                         self.learning_rate * tree.predict_from_transposed(&transposed_data, i);
                 }
             }
@@ -717,17 +717,16 @@ impl OptimizedPKBoostShannon {
             let mut batch_preds = vec![self.base_score; batch_end - batch_start];
 
             for tree in &self.trees {
-                let tree_preds: Vec<f64> = (batch_start..batch_end)
-                    .into_par_iter()
-                    .map(|sample_idx| tree.predict_from_transposed(&transposed_data, sample_idx))
-                    .collect();
-
-                batch_preds
-                    .par_iter_mut()
-                    .zip(tree_preds.par_iter())
-                    .for_each(|(current_pred, tree_pred)| {
-                        *current_pred += self.learning_rate * tree_pred;
+                let tree_preds =
+                    crate::fork_parallel::pfor_range_map(batch_start..batch_end, |sample_idx| {
+                        tree.predict_from_transposed(&transposed_data, sample_idx as u32)
                     });
+
+                batch_preds.iter_mut().zip(tree_preds.iter()).for_each(
+                    |(current_pred, &tree_pred)| {
+                        *current_pred += self.learning_rate * tree_pred;
+                    },
+                );
             }
 
             all_predictions.extend(batch_preds);
