@@ -10,15 +10,16 @@ use crate::{
 };
 use ndarray::{Array1, ArrayView1, ArrayView2};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum RegressionLossType {
     MSE,
     Huber { delta: f64 },
     Poisson,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MSELoss;
 
 impl MSELoss {
@@ -74,7 +75,7 @@ pub fn calculate_mad(y: &[f64]) -> f64 {
     abs_devs[abs_devs.len() / 2]
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PKBoostRegressor {
     pub n_estimators: usize,
     pub learning_rate: f64,
