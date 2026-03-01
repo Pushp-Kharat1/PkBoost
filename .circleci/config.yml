@@ -49,6 +49,15 @@ jobs:
           name: Check version bumped vs main
           command: |
             git fetch origin main --depth 1
+            # Skip check if only non-source files changed (CI, docs, config, Makefile)
+            CHANGED=$(git diff --name-only origin/main...HEAD)
+            SOURCE_CHANGED=$(echo "$CHANGED" | grep -vE '^(\.circleci/|docs/|\.gitignore|Makefile|.*\.md)' || true)
+            if [ -z "$SOURCE_CHANGED" ]; then
+              echo "Only non-source files changed — skipping version bump requirement"
+              echo "Changed files:"
+              echo "$CHANGED"
+              exit 0
+            fi
             CURRENT_VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
             MAIN_VERSION=$(git show origin/main:pyproject.toml | grep '^version = ' | head -1 | sed 's/version = "\(.*\)"/\1/')
             if [ "$CURRENT_VERSION" = "$MAIN_VERSION" ]; then
