@@ -2,7 +2,25 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+*.egg-info/
+*.dist-info/
+*.egg
+.eggs/
+dist/
+build/
+*.whl
+.pytest_cache/
+.ipynb_checkpoints/
+*.ipynb
 
 # IDE
 .vscode/
@@ -15,24 +33,6 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
-# Data files - exclude all datasets
-data/*.csv
-raw_data/*.csv
-*.pkl
-*.zip
-*.xlsx
-*.png
-*.sav
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.Python
-*.so
-.pytest_cache/
-.ipynb_checkpoints/
-
 # Logs
 *.log
 
@@ -40,38 +40,35 @@ __pycache__/
 *.tmp
 *.temp
 
+# Data files
+data/*.csv
+raw_data/*.csv
+*.pkl
+*.zip
+*.xlsx
+*.sav
+
 # Build artifacts
 *.exe
 *.dll
 *.dylib
+*.dSYM/
 
 # Documentation build
 /docs/_build/
 /site/
-FEATURE_LIST_PROGRESSIVE_PRECISION.md
-.gitignore
-NEXT_STEPS_COMPLETED.md
-.gitignore
-PROGRESSIVE_PRECISION_SUMMARY.md
-PROGRESSIVE_PRECISION_RESULTS.md
-three_way_comparison.csv
-THREEWAY_COMPARISON_RESULTS.md
-docs/PROGRESSIVE_PRECISION.md
-temp/val.csv
-temp/test_drift.csv
-.gitignore
-temp/train.csv
-temp/test.csv
-compare_16_drift_scenarios.py
+
+# Profiling artifacts
+profile.json.gz
+*.json.gz
+
+# Local experiment artifacts
+test_suite/
+benchmark results/
+temp/
+
+# Generated comparison/result files
+*.csv
 rust_code_with_structure.txt
-.gitignore
 all_rust_code.txt
 alb_metrics.csv
-profile.json.gz
-all_rust_code.txt
-
-# Personal notebooks
-*.ipynb
-
-# Local experiments
-test_suite/

@@ -2,7 +2,7 @@
 
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
 try:
     from pkboost import PKBoostClassifier as _PKBoostClassifier
@@ -12,7 +12,7 @@ except ImportError:
 
 class PKBoostClassifier(BaseEstimator, ClassifierMixin):
     """Scikit-learn compatible PKBoost binary classifier.
-    
+
     Parameters
     ----------
     n_estimators : int, default=1000
@@ -39,7 +39,7 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
         Automatically tune hyperparameters based on data.
     verbose : bool, default=False
         Enable verbose output during training.
-    
+
     Attributes
     ----------
     classes_ : ndarray of shape (n_classes,)
@@ -47,11 +47,22 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
     n_features_in_ : int
         Number of features seen during fit.
     """
-    
-    def __init__(self, n_estimators=1000, learning_rate=0.05, max_depth=6,
-                 min_samples_split=20, min_child_weight=1.0, reg_lambda=1.0,
-                 gamma=0.0, subsample=0.8, colsample_bytree=0.8,
-                 scale_pos_weight=1.0, auto_tune=True, verbose=False):
+
+    def __init__(
+        self,
+        n_estimators=1000,
+        learning_rate=0.05,
+        max_depth=6,
+        min_samples_split=20,
+        min_child_weight=1.0,
+        reg_lambda=1.0,
+        gamma=0.0,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        scale_pos_weight=1.0,
+        auto_tune=True,
+        verbose=False,
+    ):
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.max_depth = max_depth
@@ -64,10 +75,10 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
         self.scale_pos_weight = scale_pos_weight
         self.auto_tune = auto_tune
         self.verbose = verbose
-        
+
     def fit(self, X, y, eval_set=None):
         """Fit the PKBoost model.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
@@ -76,20 +87,20 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
             Target values (0 or 1).
         eval_set : tuple of (X_val, y_val), optional
             Validation set for early stopping.
-            
+
         Returns
         -------
         self : object
             Fitted estimator.
         """
-        X, y = check_X_y(X, y, dtype=np.float64, order='C')
-        
+        X, y = check_X_y(X, y, dtype=np.float64, order="C")
+
         self.classes_ = np.unique(y)
         if len(self.classes_) != 2:
             raise ValueError("PKBoostClassifier only supports binary classification")
-        
+
         self.n_features_in_ = X.shape[1]
-        
+
         # Create model
         if self.auto_tune:
             self._model = _PKBoostClassifier.auto()
@@ -104,87 +115,88 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
                 gamma=self.gamma,
                 subsample=self.subsample,
                 colsample_bytree=self.colsample_bytree,
-                scale_pos_weight=self.scale_pos_weight
+                scale_pos_weight=self.scale_pos_weight,
             )
-        
+
         # Prepare eval_set
         x_val, y_val = None, None
         if eval_set is not None:
             x_val, y_val = eval_set
-            x_val = check_array(x_val, dtype=np.float64, order='C')
+            x_val = check_array(x_val, dtype=np.float64, order="C")
             y_val = np.ascontiguousarray(y_val, dtype=np.float64)
-        
+
         # Fit
         X = np.ascontiguousarray(X, dtype=np.float64)
         y = np.ascontiguousarray(y, dtype=np.float64)
         self._model.fit(X, y, x_val=x_val, y_val=y_val, verbose=self.verbose)
-        
+
         return self
-    
+
     def predict(self, X):
         """Predict class labels.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
             Samples.
-            
+
         Returns
         -------
         y_pred : ndarray of shape (n_samples,)
             Predicted class labels.
         """
-        check_is_fitted(self, ['_model', 'classes_'])
-        X = check_array(X, dtype=np.float64, order='C')
+        check_is_fitted(self, ["_model", "classes_"])
+        X = check_array(X, dtype=np.float64, order="C")
         X = np.ascontiguousarray(X, dtype=np.float64)
         return self._model.predict(X, threshold=0.5)
-    
+
     def predict_proba(self, X):
         """Predict class probabilities.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
             Samples.
-            
+
         Returns
         -------
         proba : ndarray of shape (n_samples, 2)
             Class probabilities.
         """
-        check_is_fitted(self, ['_model', 'classes_'])
-        X = check_array(X, dtype=np.float64, order='C')
+        check_is_fitted(self, ["_model", "classes_"])
+        X = check_array(X, dtype=np.float64, order="C")
         X = np.ascontiguousarray(X, dtype=np.float64)
-        
+
         proba_pos = self._model.predict_proba(X)
         proba = np.column_stack([1 - proba_pos, proba_pos])
         return proba
-    
+
     def score(self, X, y):
         """Return the mean accuracy.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
             Test samples.
         y : array-like of shape (n_samples,)
             True labels.
-            
+
         Returns
         -------
         score : float
             Mean accuracy.
         """
         from sklearn.metrics import accuracy_score
+
         return accuracy_score(y, self.predict(X))
-    
+
     def get_feature_importance(self):
         """Get feature importance scores.
-        
+
         Returns
         -------
         importance : ndarray of shape (n_features,)
             Feature importance scores.
         """
-        check_is_fitted(self, ['_model'])
+        check_is_fitted(self, ["_model"])
         return self._model.get_feature_importance()
