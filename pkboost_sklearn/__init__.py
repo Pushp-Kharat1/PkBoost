@@ -43,39 +43,35 @@ Adaptive Learning (streaming):
 
 __version__ = "2.3.0"
 
-from .sklearn_interface import (
-    PKBoostClassifier,
-    PKBoostRegressor,
-    PKBoostAdaptiveClassifier
-)
+from .sklearn_interface import PKBoostAdaptiveClassifier, PKBoostClassifier, PKBoostRegressor
 
 __all__ = [
-    'PKBoostClassifier',
-    'PKBoostRegressor',
-    'PKBoostAdaptiveClassifier',
-    '__version__',
+    "PKBoostClassifier",
+    "PKBoostRegressor",
+    "PKBoostAdaptiveClassifier",
+    "__version__",
 ]
 
 
 def get_config():
     """Get PKBoost configuration and build information."""
     import platform
+
     return {
-        'version': __version__,
-        'python_version': platform.python_version(),
-        'platform': platform.platform(),
+        "version": __version__,
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
     }
 
 
 def show_versions():
     """Print version information for debugging."""
-    import sys
     try:
         import numpy as np
         import sklearn
-        
+
         config = get_config()
-        
+
         print("PKBoost Configuration")
         print("=" * 60)
         print(f"PKBoost version:      {config['version']}")
@@ -86,6 +82,3 @@ def show_versions():
         print("=" * 60)
     except ImportError as e:
         print(f"Error importing dependencies: {e}")
-
-
-

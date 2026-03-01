@@ -1,9 +1,10 @@
 """Test sklearn interface serialization with joblib/pickle."""
 
+import os
+import tempfile
+
 import numpy as np
 import pytest
-import tempfile
-import os
 
 try:
     import joblib
@@ -48,7 +49,7 @@ def test_joblib_dump_load(trained_classifier, sample_data):
 
     pred_before = trained_classifier.predict_proba(X)[:, 1]
 
-    with tempfile.NamedTemporaryFile(suffix='.joblib', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".joblib", delete=False) as f:
         model_path = f.name
 
     try:
@@ -79,16 +80,16 @@ def test_pickle_dump_load(trained_classifier, sample_data):
 
     pred_before = trained_classifier.predict_proba(X)[:, 1]
 
-    with tempfile.NamedTemporaryFile(suffix='.pkl', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
         model_path = f.name
 
     try:
         # Save with pickle
-        with open(model_path, 'wb') as f:
+        with open(model_path, "wb") as f:
             pickle.dump(trained_classifier, f)
 
         # Load with pickle
-        with open(model_path, 'rb') as f:
+        with open(model_path, "rb") as f:
             clf_loaded = pickle.load(f)
 
         # Check predictions
@@ -105,7 +106,7 @@ def test_save_load_model(trained_classifier, sample_data):
 
     pred_before = trained_classifier.predict_proba(X)[:, 1]
 
-    with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         model_path = f.name
 
     try:
@@ -151,10 +152,12 @@ def test_sklearn_pipeline(sample_data):
 
     X, y = sample_data
 
-    pipe = Pipeline([
-        ('scaler', StandardScaler()),
-        ('clf', PKBoostClassifier(n_estimators=10, max_depth=2)),
-    ])
+    pipe = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("clf", PKBoostClassifier(n_estimators=10, max_depth=2)),
+        ]
+    )
 
     pipe.fit(X, y)
     pred = pipe.predict(X)
@@ -171,15 +174,17 @@ def test_sklearn_pipeline_joblib(sample_data):
 
     X, y = sample_data
 
-    pipe = Pipeline([
-        ('scaler', StandardScaler()),
-        ('clf', PKBoostClassifier(n_estimators=10, max_depth=2)),
-    ])
+    pipe = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("clf", PKBoostClassifier(n_estimators=10, max_depth=2)),
+        ]
+    )
 
     pipe.fit(X, y)
     pred_before = pipe.predict_proba(X)[:, 1]
 
-    with tempfile.NamedTemporaryFile(suffix='.joblib', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".joblib", delete=False) as f:
         model_path = f.name
 
     try:
