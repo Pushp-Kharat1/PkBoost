@@ -124,12 +124,14 @@ jobs:
   publish-to-codeartifact:
     docker:
       - image: cimg/python:3.11
+    environment:
+      AWS_DEFAULT_REGION: us-west-2
     steps:
       - attach_workspace:
           at: .
       - aws-cli/setup:
           role-arn: $AWS_ROLE_ARN
-          aws-region: us-west-2
+          aws-region: AWS_DEFAULT_REGION
       - setup-codeartifact
       - run:
           name: Install twine
