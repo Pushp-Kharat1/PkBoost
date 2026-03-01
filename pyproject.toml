@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pkboost"
-version = "2.2.2"
+version = "2.3.0"
 description = "Gradient boosting that adapts to concept drift in imbalanced data"
 authors = [{name = "Pushp Kharat", email = "kharatpushp16@outlook.com"}]
 readme = "README.md"
@@ -26,13 +26,32 @@ dependencies = [
 sklearn = [
     "scikit-learn>=1.0.0",
 ]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "scikit-learn>=1.6.0",
+    "joblib",
+    "ruff>=0.4.0",
+]
 
 [project.urls]
-Homepage = "https://pkboost.vercel.app/"
-Repository = "https://github.com/Pushp-Kharat1/pkboost"
+Repository = "https://github.com/scalevp-investment-ops/pkboost"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
 python-source = "."
 
 include = ["pkboost_sklearn/**/*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "pkboost_sklearn"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py38"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

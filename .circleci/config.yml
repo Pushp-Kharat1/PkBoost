@@ -1,0 +1,208 @@
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@3.1
+
+commands:
+  setup-codeartifact:
+    steps:
+      - run:
+          name: Configure AWS CodeArtifact
+          command: |
+            AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            CODEARTIFACT_TOKEN=$(aws codeartifact get-authorization-token \
+              --domain svp-investment-ops \
+              --domain-owner $AWS_ACCOUNT_ID \
+              --region us-west-2 \
+              --query authorizationToken \
+              --output text)
+            CODEARTIFACT_REPO_URL=$(aws codeartifact get-repository-endpoint \
+              --domain svp-investment-ops \
+              --domain-owner $AWS_ACCOUNT_ID \
+              --repository python-packages \
+              --format pypi \
+              --region us-west-2 \
+              --query repositoryEndpoint \
+              --output text)
+            echo "export AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $BASH_ENV
+            echo "export CODEARTIFACT_TOKEN=$CODEARTIFACT_TOKEN" >> $BASH_ENV
+            echo "export CODEARTIFACT_REPO_URL=$CODEARTIFACT_REPO_URL" >> $BASH_ENV
+
+  install-rust:
+    steps:
+      - run:
+          name: Install Rust stable toolchain
+          command: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            echo 'source $HOME/.cargo/env' >> $BASH_ENV
+            source $HOME/.cargo/env
+            rustc --version
+            cargo --version
+
+jobs:
+  check-version-bump:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - run:
+          name: Check version bumped vs main
+          command: |
+            git fetch origin main --depth 1
+            CURRENT_VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+            MAIN_VERSION=$(git show origin/main:pyproject.toml | grep '^version = ' | head -1 | sed 's/version = "\(.*\)"/\1/')
+            if [ "$CURRENT_VERSION" = "$MAIN_VERSION" ]; then
+              echo "ERROR: pyproject.toml version must be bumped (currently $CURRENT_VERSION, same as main)"
+              exit 1
+            fi
+            echo "Version bumped: $MAIN_VERSION -> $CURRENT_VERSION"
+            if ! grep -qF "## [$CURRENT_VERSION]" CHANGELOG.md; then
+              echo "ERROR: CHANGELOG.md must contain an entry for ## [$CURRENT_VERSION]"
+              exit 1
+            fi
+            echo "CHANGELOG.md entry found for $CURRENT_VERSION"
+
+  lint:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - run:
+          name: Install ruff
+          command: pip install uv && uv pip install --system ruff
+      - run:
+          name: Ruff lint
+          command: ruff check pkboost/ pkboost_sklearn/ tests/
+      - run:
+          name: Ruff format check
+          command: ruff format --check pkboost/ pkboost_sklearn/ tests/
+
+  test:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - install-rust
+      - run:
+          name: Install maturin and test dependencies
+          command: |
+            pip install uv
+            uv pip install --system \
+              "maturin>=1.0,<2.0" \
+              pytest \
+              pytest-cov \
+              "numpy>=1.24.0" \
+              "scikit-learn>=1.6.0" \
+              joblib
+      - run:
+          name: Build extension
+          command: maturin develop --release
+      - run:
+          name: Run tests
+          command: |
+            pytest tests/ pkboost_sklearn/test_sklearn_compat.py \
+              -v \
+              --cov=pkboost_sklearn \
+              --cov-report=term-missing \
+              --cov-report=html \
+              --tb=short
+      - store_artifacts:
+          path: htmlcov
+
+  build-wheel:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - install-rust
+      - run:
+          name: Install maturin
+          command: pip install "maturin>=1.0,<2.0"
+      - run:
+          name: Build release wheel
+          command: maturin build --release --out dist/
+      - run:
+          name: List built artifacts
+          command: ls -lh dist/
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/
+
+  publish-to-codeartifact:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - attach_workspace:
+          at: .
+      - aws-cli/setup:
+          role-arn: $AWS_ROLE_ARN
+      - setup-codeartifact
+      - run:
+          name: Install twine
+          command: pip install twine
+      - run:
+          name: Publish to CodeArtifact
+          command: |
+            TWINE_USERNAME=aws \
+            TWINE_PASSWORD=$CODEARTIFACT_TOKEN \
+            TWINE_REPOSITORY_URL=$CODEARTIFACT_REPO_URL \
+            twine upload dist/* || {
+              code=$?
+              # Exit code 1 from twine can mean 409 Conflict (already published) — treat as success
+              if twine upload dist/* 2>&1 | grep -q "File already exists"; then
+                echo "Package already published, skipping"
+              else
+                exit $code
+              fi
+            }
+
+  secrets-scan:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - run:
+          name: Install Trivy
+          command: |
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+      - run:
+          name: Scan for secrets
+          command: trivy fs --scanners secret --exit-code 1 .
+
+workflows:
+  pr-checks:
+    jobs:
+      - check-version-bump:
+          filters:
+            branches:
+              ignore: main
+      - lint:
+          filters:
+            branches:
+              ignore: main
+      - test:
+          filters:
+            branches:
+              ignore: main
+
+  release:
+    jobs:
+      - build-wheel:
+          filters:
+            tags:
+              only: /^v\d+\.\d+\.\d+-svp\.\d+$/
+            branches:
+              ignore: /.*/
+      - publish-to-codeartifact:
+          requires:
+            - build-wheel
+          filters:
+            tags:
+              only: /^v\d+\.\d+\.\d+-svp\.\d+$/
+            branches:
+              ignore: /.*/
+
+  security-checks:
+    jobs:
+      - secrets-scan

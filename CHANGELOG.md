@@ -5,6 +5,19 @@ All notable changes to [PKBoost](https://pypi.org/project/pkboost/) are document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-03-01
+
+### Added
+
+- `predict_contributions(X)` on `PKBoostClassifier` — per-feature Saabas contributions with bias term; output shape `(n_samples, n_features + 1)`, row sums equal raw pre-sigmoid prediction
+- Cover tracking per node during `fit_optimized()` for contribution computation
+- `node_covers` field in serialized models (`#[serde(default)]` for backwards compat)
+- CircleCI integration: PR checks (lint, test, version bump) and release pipeline to AWS CodeArtifact
+
+### Fixed
+
+- Maturin package layout: added `pkboost/__init__.py` so source installs work correctly
+
 ## [2.2.2] - 2026-01-24
 
 ### Fixed
