@@ -68,14 +68,14 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Install ruff
-          command: pip install uv && uv pip install --system ruff
+          name: Install uv and dev dependencies
+          command: pip install uv && uv sync --extra dev
       - run:
           name: Ruff lint
-          command: ruff check pkboost/ pkboost_sklearn/ tests/
+          command: uv run ruff check pkboost/ pkboost_sklearn/ tests/
       - run:
           name: Ruff format check
-          command: ruff format --check pkboost/ pkboost_sklearn/ tests/ --diff
+          command: uv run ruff format --check --diff pkboost/ pkboost_sklearn/ tests/
 
   test:
     docker:
@@ -84,23 +84,15 @@ jobs:
       - checkout
       - install-rust
       - run:
-          name: Install maturin and test dependencies
-          command: |
-            pip install uv
-            uv pip install --system \
-              "maturin>=1.0,<2.0" \
-              pytest \
-              pytest-cov \
-              "numpy>=1.24.0" \
-              "scikit-learn>=1.6.0" \
-              joblib
+          name: Install uv and dev dependencies
+          command: pip install uv && uv sync --extra dev
       - run:
           name: Build extension
-          command: maturin develop --release
+          command: uv run maturin develop --release
       - run:
           name: Run tests
           command: |
-            pytest tests/ \
+            uv run pytest tests/ \
               -v \
               --cov=pkboost_sklearn \
               --cov-report=term-missing \
@@ -116,11 +108,11 @@ jobs:
       - checkout
       - install-rust
       - run:
-          name: Install maturin
-          command: pip install "maturin>=1.0,<2.0"
+          name: Install uv and maturin
+          command: pip install uv && uv sync --extra dev
       - run:
           name: Build release wheel
-          command: maturin build --release --out dist/
+          command: uv run maturin build --release --out dist/
       - run:
           name: List built artifacts
           command: ls -lh dist/
