@@ -52,6 +52,7 @@ raw_data/*.csv
 *.exe
 *.dll
 *.dylib
+*.dSYM/
 
 # Documentation build
 /docs/_build/
