@@ -157,7 +157,9 @@ jobs:
       - run:
           name: Install Trivy
           command: |
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+            mkdir -p $HOME/bin
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b $HOME/bin
+            echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
       - run:
           name: Scan for secrets
           command: trivy fs --scanners secret --exit-code 1 .
