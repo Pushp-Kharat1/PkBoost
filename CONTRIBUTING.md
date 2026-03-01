@@ -18,15 +18,10 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ## Getting Started
 
-1. **Fork the repository** on GitHub
-2. **Clone your fork** locally:
+1. **Clone the repository**:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/pkboost.git
+   git clone https://github.com/scalevp-investment-ops/pkboost.git
    cd pkboost
-   ```
-3. **Add the upstream remote**:
-   ```bash
-   git remote add upstream https://github.com/PKBoost-AI-Labs/pkboost.git
    ```
 
 ## How to Contribute
@@ -203,8 +198,7 @@ Include:
 
 ## Questions?
 
-- Open an issue for questions
-- Email: kharatpushp16@outlook.com
+Open an issue in the repository.
 
 ## License
 

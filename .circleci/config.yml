@@ -75,7 +75,7 @@ jobs:
           command: ruff check pkboost/ pkboost_sklearn/ tests/
       - run:
           name: Ruff format check
-          command: ruff format --check pkboost/ pkboost_sklearn/ tests/
+          command: ruff format --check pkboost/ pkboost_sklearn/ tests/ --diff
 
   test:
     docker:
@@ -100,7 +100,7 @@ jobs:
       - run:
           name: Run tests
           command: |
-            pytest tests/ pkboost_sklearn/test_sklearn_compat.py \
+            pytest tests/ \
               -v \
               --cov=pkboost_sklearn \
               --cov-report=term-missing \

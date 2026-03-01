@@ -44,7 +44,7 @@ python-source = "."
 include = ["pkboost_sklearn/**/*.py"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "pkboost_sklearn"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
 

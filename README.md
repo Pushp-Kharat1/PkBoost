@@ -5,12 +5,8 @@
 **An Adaptive Gradient Boosting Library**
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-black?style=for-the-badge)](https://www.rust-lang.org/)
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge)](https://pypi.org/project/pkboost/)
-[![PyPI](https://img.shields.io/pypi/v/pkboost?style=for-the-badge)](https://pypi.org/project/pkboost/)
-[![Downloads](https://img.shields.io/pepy/dt/pkboost?style=for-the-badge)](https://pepy.tech/project/pkboost)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge)](https://www.python.org/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17568991-blue?style=for-the-badge)](https://doi.org/10.5281/zenodo.17568991)
-[![Kaggle](https://img.shields.io/badge/Kaggle-Reproducible%20Benchmark-20BEFF?style=for-the-badge&logo=kaggle&logoColor=white)](https://www.kaggle.com/code/pushpkharat/pkboost-adaptive-gbdt-build-for-drift-resilience)
 
 
 </div>
@@ -22,15 +18,7 @@ Built from scratch in Rust, PKBoost (Performance-Based Knowledge Booster) manage
 
 **Perfect for:** Multi-class fraud detection, real-time medical diagnosis, anomaly detection in changing environments, or any scenario where data evolves over time and minority classes are critical.
 
-## What's New in v2.0
-
-- **Multi-Class Classification**: One-vs-Rest with softmax (92.36% on Dry Bean, 7 classes)
-- **165x Faster Adaptation**: Hierarchical Adaptive Boosting (HAB) with selective retraining
-- **2-17x Better Drift Resilience**: vs XGBoost/LightGBM on real-world data
-- **45 Production Features**: Complete feature list in [FEATURES.md](FEATURES.md)
-- **Real-World Validation**: Tested on Credit Card, Dry Bean, Iris datasets
-
-See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ---
 
@@ -41,22 +29,17 @@ See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
 - **[Drift Benchmark Report](docs/DRIFT_BENCHMARK_REPORT.md)** - 16 drift scenarios analysis
 - **[Scripts Guide](docs/SCRIPTS_GUIDE.md)** - Data preparation and utility scripts
 - **[Features List](docs/FEATURES.md)** - All 45 production features
-- **[Changelog v2.0](docs/CHANGELOG_V2.md)** - What's new in version 2.0
 
 ---
 
 ## Quick Start
 
-## To use it in Python Please refer to: [Python Bindings Guide](docs/PYTHON_BINDINGS.md)
-
-## And For API's: [Python API README](python/README.md)
-
-## Try Kaggle Notebook: [Kaggle Notebook](https://www.kaggle.com/code/pushpkharat/pkboost-adaptive-gbdt-build-for-drift-resilience)
+See [Python Bindings Guide](docs/PYTHON_BINDINGS.md) for the Python API.
 
 Clone the repository and build:
 
 ```bash
-git clone https://github.com/Pushp-Kharat1/pkboost.git
+git clone https://github.com/scalevp-investment-ops/pkboost.git
 cd pkboost
 cargo build --release
 ```
@@ -293,9 +276,7 @@ PKBoost features experimental drift detection that monitors model vulnerabilitie
 
 ---
 
-### For more details, see [BENCHMARKS.md](BENCHMARK.md)
-
-### For Benchmarks in different drift conditions, refer [DRIFTBENCHMARK.md](DRIFTBENCHMARK.md)
+For drift benchmark details, see [DRIFT_BENCHMARK_REPORT.md](docs/DRIFT_BENCHMARK_REPORT.md).
 
 ---
 
@@ -365,11 +346,10 @@ See `src/` for full implementation. Binary classification only.
 - 8GB+ RAM for large datasets (>100K samples)
 - Multi-core CPU recommended (auto-detects and parallelizes)
 
-**Python Package:**
+**Python Package:** Install from the internal CodeArtifact registry (see [Python Bindings Guide](docs/PYTHON_BINDINGS.md)):
 ```bash
-pip install pkboost
+pip install pkboost[sklearn]
 ```
-See [Python Bindings Guide](docs/PYTHON_BINDINGS.md) for full API documentation.
 
 ---
 
@@ -415,9 +395,7 @@ cargo build --release --jobs 1  # Limit parallel compilation
 
 ## Contributing
 
-Open for contributions! Fork & PR: Focus on extensions, optimizations, or new tests. Issues welcome for bugs or dataset requests.
-
-**Contact:** kharatpushp16@outlook.com
+Open a PR against `main`. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and coding standards.
 
 ## License
 
@@ -434,23 +412,4 @@ You may choose either license when using this software.
 
 If you use PKBoost in your research, please cite:
 
-```bibtex
-@software{kharat2025pkboost,
-  author = {Kharat, Pushp},
-  title = {PKBoost: Shannon-Guided Gradient Boosting for Extreme Imbalance},
-  year = {2025},
-  url = {https://github.com/Pushp-Kharat1/pkboost}
-}
-```
-
----
-
-## Further Reading
-
-[Rust ML Ecosystem](https://www.arewelearningyet.com/)
-
 **Questions?** Open an issue.
-
----
-
-**Library by Pushp Kharat.** Last updated: December 27, 2025.

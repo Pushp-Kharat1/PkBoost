@@ -128,13 +128,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Less than 2% performance degradation under drift vs 31.8% (XGBoost) and 42.5% (LightGBM)
 - Python 3.8+ support with NumPy integration
 
-[2.2.2]: https://github.com/pushp/PkBoost/compare/v2.2.1...v2.2.2
-[2.2.1]: https://github.com/pushp/PkBoost/compare/v2.2.0...v2.2.1
-[2.2.0]: https://github.com/pushp/PkBoost/compare/v2.1.1...v2.2.0
-[2.1.1]: https://github.com/pushp/PkBoost/compare/v2.1.0...v2.1.1
-[2.1.0]: https://github.com/pushp/PkBoost/compare/v2.0.2...v2.1.0
-[2.0.2]: https://github.com/pushp/PkBoost/compare/v2.0.1...v2.0.2
-[2.0.1]: https://github.com/pushp/PkBoost/compare/v2.0.0...v2.0.1
-[2.0.0]: https://github.com/pushp/PkBoost/compare/v0.1.1...v2.0.0
-[0.1.1]: https://github.com/pushp/PkBoost/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/pushp/PkBoost/releases/tag/v0.1.0
+[2.3.0]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.2.2...v2.3.0
+[2.2.2]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.2.1...v2.2.2
+[2.2.1]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.2.0...v2.2.1
+[2.2.0]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.1.1...v2.2.0
+[2.1.1]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.1.0...v2.1.1
+[2.1.0]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.0.2...v2.1.0
+[2.0.2]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/scalevp-investment-ops/pkboost/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/scalevp-investment-ops/pkboost/compare/v0.1.1...v2.0.0
+[0.1.1]: https://github.com/scalevp-investment-ops/pkboost/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/scalevp-investment-ops/pkboost/releases/tag/v0.1.0
