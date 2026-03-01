@@ -6,7 +6,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-black?style=for-the-badge)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge)](https://www.python.org/)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](https://www.apache.org/licenses/LICENSE-2.0)
 
 
 </div>
@@ -399,12 +399,7 @@ Open a PR against `main`. See [CONTRIBUTING.md](CONTRIBUTING.md) for development
 
 ## License
 
-PKBoost is dual-licensed under:
-
-- GNU General Public License v3.0 or later (GPL-3.0-or-later)
-- Apache License, Version 2.0
-
-You may choose either license when using this software.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
 
 ---
 
