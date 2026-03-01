@@ -129,6 +129,7 @@ jobs:
           at: .
       - aws-cli/setup:
           role-arn: $AWS_ROLE_ARN
+          aws-region: us-west-2
       - setup-codeartifact
       - run:
           name: Install twine
