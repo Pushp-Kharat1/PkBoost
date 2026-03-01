@@ -229,6 +229,47 @@ impl PKBoostClassifier {
         Ok(PyArray1::from_vec(py, importance))
     }
 
+    /// Per-sample feature contributions (Saabas method).
+    ///
+    /// Returns an ndarray of shape ``(n_samples, n_features + 1)``.
+    /// The last column is the bias term.  Row sums equal the raw
+    /// (pre-sigmoid) prediction.
+    fn predict_contributions<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err(
+                "Model not fitted. Call fit() first.",
+            ));
+        }
+
+        let x_arr = to_readonly_array2(py, x)?;
+        let contributions = self
+            .model
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Model not initialized"))?
+            .predict_contributions(x_arr.as_array())
+            .map_err(|e| PyValueError::new_err(format!("Contribution computation failed: {}", e)))?;
+
+        Ok(contributions.into_pyarray(py))
+    }
+
+    /// Return the base score (log-odds bias) learned during training.
+    fn get_base_score(&self) -> PyResult<f64> {
+        if !self.fitted {
+            return Err(PyRuntimeError::new_err(
+                "Model not fitted. Call fit() first.",
+            ));
+        }
+        Ok(self
+            .model
+            .as_ref()
+            .map(|m| m.get_base_score())
+            .unwrap_or(0.0))
+    }
+
     #[getter]
     fn is_fitted(&self) -> bool {
         self.fitted
