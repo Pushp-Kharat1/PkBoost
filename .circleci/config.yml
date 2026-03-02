@@ -4,30 +4,6 @@ orbs:
   aws-cli: circleci/aws-cli@3.1
 
 commands:
-  setup-codeartifact:
-    steps:
-      - run:
-          name: Configure AWS CodeArtifact
-          command: |
-            AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-            CODEARTIFACT_TOKEN=$(aws codeartifact get-authorization-token \
-              --domain svp-investment-ops \
-              --domain-owner $AWS_ACCOUNT_ID \
-              --region us-west-2 \
-              --query authorizationToken \
-              --output text)
-            CODEARTIFACT_REPO_URL=$(aws codeartifact get-repository-endpoint \
-              --domain svp-investment-ops \
-              --domain-owner $AWS_ACCOUNT_ID \
-              --repository python-packages \
-              --format pypi \
-              --region us-west-2 \
-              --query repositoryEndpoint \
-              --output text)
-            echo "export AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $BASH_ENV
-            echo "export CODEARTIFACT_TOKEN=$CODEARTIFACT_TOKEN" >> $BASH_ENV
-            echo "export CODEARTIFACT_REPO_URL=$CODEARTIFACT_REPO_URL" >> $BASH_ENV
-
   install-rust:
     steps:
       - run:
@@ -133,33 +109,58 @@ jobs:
   publish-to-codeartifact:
     docker:
       - image: cimg/python:3.11
-    environment:
-      AWS_DEFAULT_REGION: us-west-2
     steps:
       - attach_workspace:
           at: .
-      - aws-cli/setup:
-          role-arn: $AWS_ROLE_ARN
-          aws-region: AWS_DEFAULT_REGION
-      - setup-codeartifact
+      - aws-cli/setup
+      - run:
+          name: Configure AWS region
+          command: aws configure set default.region $AWS_REGION
       - run:
           name: Install twine
-          command: pip install twine
+          command: pip install uv && uv pip install --system twine
       - run:
           name: Publish to CodeArtifact
           command: |
-            TWINE_USERNAME=aws \
-            TWINE_PASSWORD=$CODEARTIFACT_TOKEN \
-            TWINE_REPOSITORY_URL=$CODEARTIFACT_REPO_URL \
-            twine upload dist/* || {
-              code=$?
-              # Exit code 1 from twine can mean 409 Conflict (already published) — treat as success
-              if twine upload dist/* 2>&1 | grep -q "File already exists"; then
-                echo "Package already published, skipping"
+            export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+            export CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token \
+              --domain svp-investment-ops \
+              --domain-owner $AWS_ACCOUNT_ID \
+              --region $AWS_REGION \
+              --query authorizationToken \
+              --output text)
+
+            export CODEARTIFACT_REPO_URL=$(aws codeartifact get-repository-endpoint \
+              --domain svp-investment-ops \
+              --domain-owner $AWS_ACCOUNT_ID \
+              --repository python-packages \
+              --format pypi \
+              --region $AWS_REGION \
+              --query repositoryEndpoint \
+              --output text)
+
+            echo "Publishing to: $CODEARTIFACT_REPO_URL"
+
+            export TWINE_USERNAME=aws
+            export TWINE_PASSWORD=$CODEARTIFACT_AUTH_TOKEN
+            export TWINE_REPOSITORY_URL=$CODEARTIFACT_REPO_URL
+
+            set +e
+            python -m twine upload dist/* 2>&1 | tee /tmp/twine_output.log
+            upload_exit_code=${PIPESTATUS[0]}
+            set -e
+
+            if [ $upload_exit_code -ne 0 ]; then
+              if grep -q "409 Conflict\|already exists" /tmp/twine_output.log; then
+                echo "Package version already exists in CodeArtifact — skipping"
               else
-                exit $code
+                cat /tmp/twine_output.log
+                exit 1
               fi
-            }
+            fi
+
+            echo "Done."
 
   secrets-scan:
     docker:
