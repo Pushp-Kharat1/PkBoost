@@ -96,8 +96,11 @@ jobs:
           name: Install uv and maturin
           command: pip install uv && uv sync --extra dev
       - run:
+          name: Install zig (for manylinux2014 cross-compilation)
+          command: uv pip install --system ziglang
+      - run:
           name: Build release wheel
-          command: uv run maturin build --release --out dist/
+          command: uv run maturin build --release --manylinux 2014 --out dist/
       - run:
           name: List built artifacts
           command: ls -lh dist/
