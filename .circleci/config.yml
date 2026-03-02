@@ -147,7 +147,7 @@ jobs:
             export TWINE_REPOSITORY_URL=$CODEARTIFACT_REPO_URL
 
             set +e
-            python -m twine upload dist/* 2>&1 | tee /tmp/twine_output.log
+            python -m twine upload --verbose dist/* 2>&1 | tee /tmp/twine_output.log
             upload_exit_code=${PIPESTATUS[0]}
             set -e
 
