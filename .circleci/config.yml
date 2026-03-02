@@ -100,7 +100,7 @@ jobs:
           command: uv pip install --system ziglang
       - run:
           name: Build release wheel
-          command: uv run maturin build --release --manylinux 2014 --out dist/
+          command: uv run maturin build --release --manylinux 2014 --zig --out dist/
       - run:
           name: List built artifacts
           command: ls -lh dist/
