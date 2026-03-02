@@ -3,8 +3,8 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "pkboost"
-version = "2.3.0"
+name = "pkboost-svp"
+version = "2.3.1"
 description = "Gradient boosting that adapts to concept drift in imbalanced data"
 authors = [{name = "Pushp Kharat", email = "kharatpushp16@outlook.com"}]
 readme = "README.md"

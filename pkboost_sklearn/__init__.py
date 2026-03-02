@@ -41,7 +41,7 @@ Adaptive Learning (streaming):
     ...     preds = clf.predict(X_batch)
 """
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 from .sklearn_interface import PKBoostAdaptiveClassifier, PKBoostClassifier, PKBoostRegressor
 
