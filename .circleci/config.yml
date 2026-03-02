@@ -94,10 +94,7 @@ jobs:
       - install-rust
       - run:
           name: Install uv and maturin
-          command: pip install uv && uv sync --extra dev
-      - run:
-          name: Install zig (for manylinux2014 cross-compilation)
-          command: uv pip install --system ziglang
+          command: pip install uv && uv sync --extra dev && uv pip install "maturin[zig]"
       - run:
           name: Build release wheel
           command: uv run maturin build --release --manylinux 2014 --zig --out dist/
