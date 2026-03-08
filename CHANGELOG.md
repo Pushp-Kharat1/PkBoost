@@ -5,6 +5,12 @@ All notable changes to [PKBoost](https://pypi.org/project/pkboost/) are document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.5] - 2026-03-08
+
+### Fixed
+
+- macOS arm64 wheel build: switch from EOL `macos.m1.medium.gen1` (deprecated Feb 2026) to `m4pro.medium` with Xcode 16.3.0, building natively instead of cross-compiling from Linux (cross-compilation is fundamentally incompatible with crates that depend on Apple system frameworks like `libmimalloc-sys`)
+
 ## [2.3.4] - 2026-03-08
 
 ### Fixed

@@ -109,22 +109,23 @@ jobs:
             - dist/linux/
 
   build-wheel-macos-arm64:
-    docker:
-      - image: cimg/python:3.11
+    macos:
+      xcode: "16.3.0"
+    resource_class: m4pro.medium
     steps:
       - checkout
       - install-rust
       - run:
-          name: Install Zig and maturin with cross-compilation support
+          name: Install Python dependencies and maturin
           command: |
-            pip install uv && uv sync --extra dev
-            uv pip install "maturin[zig]"
-            rustup target add aarch64-apple-darwin
+            pip3 install uv
+            uv sync --extra dev
+            uv pip install maturin
       - run:
-          name: Build release wheel (macOS arm64 via cross-compilation)
+          name: Build release wheel (native macOS arm64)
           command: |
             mkdir -p dist/macos-arm64
-            RUSTFLAGS="-C target-cpu=apple-m1" uv run maturin build --release --target aarch64-apple-darwin --zig -i python3.11 --out dist/macos-arm64/
+            uv run maturin build --release --out dist/macos-arm64/
       - run:
           name: List built artifacts
           command: ls -lh dist/macos-arm64/
