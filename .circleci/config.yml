@@ -124,7 +124,7 @@ jobs:
           name: Build release wheel (macOS arm64 via cross-compilation)
           command: |
             mkdir -p dist/macos-arm64
-            uv run maturin build --release --target aarch64-apple-darwin --zig --out dist/macos-arm64/
+            uv run maturin build --release --target aarch64-apple-darwin --zig -i python3.11 --out dist/macos-arm64/
       - run:
           name: List built artifacts
           command: ls -lh dist/macos-arm64/
