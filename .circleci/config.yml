@@ -116,16 +116,20 @@ jobs:
       - checkout
       - install-rust
       - run:
-          name: Install Python dependencies and maturin
+          name: Install Python 3.11/3.12/3.13 and maturin
           command: |
             pip3 install uv
-            uv sync --extra dev
-            uv pip install maturin
+            uv python install 3.11 3.12 3.13
+            pip3 install maturin
       - run:
-          name: Build release wheel (native macOS arm64)
+          name: Build release wheels (native macOS arm64, Python 3.11/3.12/3.13)
           command: |
             mkdir -p dist/macos-arm64
-            uv run maturin build --release --out dist/macos-arm64/
+            maturin build --release \
+              -i "$(uv python find 3.11)" \
+              -i "$(uv python find 3.12)" \
+              -i "$(uv python find 3.13)" \
+              --out dist/macos-arm64/
       - run:
           name: List built artifacts
           command: ls -lh dist/macos-arm64/
