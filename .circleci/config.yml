@@ -86,7 +86,7 @@ jobs:
       - store_artifacts:
           path: htmlcov
 
-  build-wheel:
+  build-wheel-linux:
     docker:
       - image: cimg/python:3.11
     steps:
@@ -96,15 +96,44 @@ jobs:
           name: Install uv and maturin
           command: pip install uv && uv sync --extra dev && uv pip install "maturin[zig]"
       - run:
-          name: Build release wheel
-          command: uv run maturin build --release --manylinux 2014 --zig --out dist/
+          name: Build release wheel (manylinux2014 x86_64)
+          command: |
+            mkdir -p dist/linux
+            uv run maturin build --release --manylinux 2014 --zig --out dist/linux/
       - run:
           name: List built artifacts
-          command: ls -lh dist/
+          command: ls -lh dist/linux/
       - persist_to_workspace:
           root: .
           paths:
-            - dist/
+            - dist/linux/
+
+  build-wheel-macos-arm64:
+    macos:
+      xcode: "15.4.0"
+    resource_class: macos.m1.medium.gen1
+    steps:
+      - checkout
+      - install-rust
+      - run:
+          name: Install Python 3.11 and maturin
+          command: |
+            brew install python@3.11 || true
+            python3.11 --version
+            python3.11 -m pip install --upgrade pip
+            python3.11 -m pip install maturin
+      - run:
+          name: Build release wheel (macOS arm64)
+          command: |
+            mkdir -p dist/macos-arm64
+            python3.11 -m maturin build --release --out dist/macos-arm64/
+      - run:
+          name: List built artifacts
+          command: ls -lh dist/macos-arm64/
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/macos-arm64/
 
   publish-to-codeartifact:
     docker:
@@ -120,7 +149,7 @@ jobs:
           name: Install twine
           command: pip install uv && uv pip install --system twine
       - run:
-          name: Publish to CodeArtifact
+          name: Publish all wheels to CodeArtifact
           command: |
             export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
@@ -146,8 +175,11 @@ jobs:
             export TWINE_PASSWORD=$CODEARTIFACT_AUTH_TOKEN
             export TWINE_REPOSITORY_URL=$CODEARTIFACT_REPO_URL
 
+            WHEELS=$(find dist -name "*.whl" | tr '\n' ' ')
+            echo "Wheels to publish: $WHEELS"
+
             set +e
-            python -m twine upload --verbose dist/* 2>&1 | tee /tmp/twine_output.log
+            python -m twine upload --verbose $WHEELS 2>&1 | tee /tmp/twine_output.log
             upload_exit_code=${PIPESTATUS[0]}
             set -e
 
@@ -195,7 +227,13 @@ workflows:
 
   release:
     jobs:
-      - build-wheel:
+      - build-wheel-linux:
+          filters:
+            tags:
+              only: /^v\d+\.\d+\.\d+-svp\.\d+$/
+            branches:
+              ignore: /.*/
+      - build-wheel-macos-arm64:
           filters:
             tags:
               only: /^v\d+\.\d+\.\d+-svp\.\d+$/
@@ -203,7 +241,8 @@ workflows:
               ignore: /.*/
       - publish-to-codeartifact:
           requires:
-            - build-wheel
+            - build-wheel-linux
+            - build-wheel-macos-arm64
           filters:
             tags:
               only: /^v\d+\.\d+\.\d+-svp\.\d+$/
