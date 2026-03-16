@@ -41,7 +41,7 @@ Adaptive Learning (streaming):
     ...     preds = clf.predict(X_batch)
 """
 
-__version__ = "2.2.2"
+__version__ = "2.2.3"
 __author__ = "Pushp Kharat"
 
 from .sklearn_interface import (
@@ -117,5 +117,4 @@ def check_for_updates():
         # Silently fail if offline, timeout, or other errors to be non-intrusive
         pass
 
-# Check for updates on import
-check_for_updates()
+

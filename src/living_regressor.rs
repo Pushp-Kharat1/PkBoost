@@ -8,7 +8,6 @@ use crate::regression::calculate_rmse;
 use crate::regression::PKBoostRegressor;
 use crate::tree::{OptimizedTreeShannon, TreeParams};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use rayon::prelude::*;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -736,7 +735,7 @@ impl AdaptiveRegressor {
         let transposed = TransposedData::from_binned(x_proc);
 
         let feature_indices: Vec<usize> = (0..n_features).collect();
-        let sample_indices: Vec<usize> = (0..n_samples).collect();
+        let sample_indices: Vec<u32> = (0..n_samples as u32).collect();
 
         let params = TreeParams {
             min_samples_split: self.primary.min_samples_split,
@@ -771,25 +770,27 @@ impl AdaptiveRegressor {
                 break;
             }
 
+            let grad_f32: Vec<f32> = grad.iter().map(|&g| g as f32).collect();
+            let hess_f32: Vec<f32> = hess.iter().map(|&h| h as f32).collect();
+
             let mut tree = OptimizedTreeShannon::new(self.primary.max_depth);
             tree.fit_optimized(
                 &transposed,
                 &buffer_y,
-                &grad,
-                &hess,
+                &grad_f32,
+                &hess_f32,
                 &sample_indices,
                 &feature_indices,
                 &params,
             );
 
-            let tree_preds: Vec<f64> = (0..n_samples)
-                .into_par_iter()
-                .map(|i| tree.predict_from_transposed(&transposed, i))
-                .collect();
+            let tree_preds = crate::fork_parallel::pfor_range_map(0..n_samples, |i| {
+                tree.predict_from_transposed(&transposed, i as u32)
+            });
 
             for (i, &tp) in tree_preds.iter().enumerate() {
                 raw_preds[i] += adaptive_lr * tp;
-                let y_range = y_mean.abs() * 100.0;
+                let y_range = (y_mean.abs() * 100.0).max(1.0);
                 raw_preds[i] = raw_preds[i].clamp(y_mean - y_range, y_mean + y_range);
             }
 

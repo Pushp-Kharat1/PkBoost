@@ -28,11 +28,7 @@ impl MSELoss {
     }
 
     pub fn gradient(&self, y_true: &[f64], y_pred: &[f64]) -> Vec<f64> {
-        y_pred
-            .par_iter()
-            .zip(y_true.par_iter())
-            .map(|(&pred, &true_y)| pred - true_y)
-            .collect()
+        crate::fork_parallel::pfor_zip_map(y_pred, y_true, |&pred, &true_y| pred - true_y)
     }
 
     pub fn hessian(&self, y_true: &[f64]) -> Vec<f64> {
@@ -91,6 +87,7 @@ pub struct PKBoostRegressor {
     pub trees: Vec<OptimizedTreeShannon>,
     base_score: f64,
     best_iteration: usize,
+    #[serde(default = "default_best_score_inf", skip_serializing_if = "is_inf")]
     best_score: f64,
     fitted: bool,
     pub loss_type: RegressionLossType,
@@ -130,7 +127,9 @@ impl PKBoostRegressor {
         let mut model = Self::new();
         let n_samples = x.nrows();
         let n_features = x.ncols();
-        let y_slice = y.as_slice().unwrap();
+        let y_slice = y
+            .as_slice()
+            .expect("Y array must be contiguous for regression");
 
         // Auto-select loss based on outliers
         let outlier_ratio = detect_outliers(y_slice);
@@ -150,7 +149,9 @@ impl PKBoostRegressor {
 
     pub fn get_gradient(&self, y_true: &[f64], y_pred: &[f64]) -> Vec<f64> {
         match self.loss_type {
-            RegressionLossType::MSE => self.loss_fn.gradient(y_true, y_pred),
+            RegressionLossType::MSE => {
+                crate::fork_parallel::pfor_zip_map(y_pred, y_true, |&pred, &true_y| pred - true_y)
+            }
             RegressionLossType::Huber { .. } => {
                 self.huber_loss.as_ref().unwrap().gradient(y_true, y_pred)
             }
@@ -160,7 +161,7 @@ impl PKBoostRegressor {
 
     pub fn get_hessian(&self, y_true: &[f64], y_pred: &[f64]) -> Vec<f64> {
         match self.loss_type {
-            RegressionLossType::MSE => self.loss_fn.hessian(y_true),
+            RegressionLossType::MSE => vec![1.0; y_true.len()],
             RegressionLossType::Huber { .. } => {
                 self.huber_loss.as_ref().unwrap().hessian(y_true, y_pred)
             }
@@ -217,19 +218,16 @@ impl PKBoostRegressor {
         for iter in 0..self.n_estimators {
             let mut rng = rand::thread_rng();
             let sample_size = (self.subsample * n_samples as f64) as usize;
-            let mut sample_indices: Vec<usize> = (0..n_samples).collect();
+            let mut sample_indices: Vec<u32> = (0..n_samples as u32).collect();
             use rand::seq::SliceRandom;
             sample_indices.shuffle(&mut rng);
             sample_indices.truncate(sample_size);
-
             let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
             let mut feature_indices: Vec<usize> = (0..n_features).collect();
             feature_indices.shuffle(&mut rng);
             feature_indices.truncate(feature_size);
-
             let grad = self.get_gradient(y_slice, &train_preds);
             let hess = self.get_hessian(y_slice, &train_preds);
-
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
             let params = TreeParams {
                 min_samples_split: self.min_samples_split,
@@ -244,39 +242,43 @@ impl PKBoostRegressor {
                 feature_elimination_threshold: 0.01,
             };
 
+            let grad_f32: Vec<f32> = grad.iter().map(|&g| g as f32).collect();
+            let hess_f32: Vec<f32> = hess.iter().map(|&h| h as f32).collect();
+
             tree.fit_optimized(
                 &transposed,
                 y_slice,
-                &grad,
-                &hess,
+                &grad_f32,
+                &hess_f32,
                 &sample_indices,
                 &feature_indices,
                 &params,
+                None, // weights
+                None, // full_preds
+                0.0,  // learning_rate (unused for standalone tree fit)
             );
 
-            let tree_preds: Vec<f64> = (0..n_samples)
-                .into_par_iter()
-                .map(|i| tree.predict_from_transposed(&transposed, i))
-                .collect();
+            let tree_preds = crate::fork_parallel::pfor_range_map(0..n_samples, |i| {
+                tree.predict_from_transposed(&transposed, i as u32)
+            });
 
             train_preds
-                .par_iter_mut()
-                .zip(tree_preds.par_iter())
+                .iter_mut()
+                .zip(tree_preds.iter())
                 .for_each(|(p, &tp)| *p += self.learning_rate * tp);
 
             if let (Some(ref vt), Some(ref mut vp), Some((_, yv))) =
                 (val_trans.as_ref(), val_preds.as_mut(), eval_set)
             {
-                let yv_slice = yv.as_slice().unwrap();
-                let val_tree_preds: Vec<f64> = (0..vt.n_samples)
-                    .into_par_iter()
-                    .map(|i| tree.predict_from_transposed(vt, i))
-                    .collect();
-
-                vp.par_iter_mut()
-                    .zip(val_tree_preds.par_iter())
+                let yv_slice = yv
+                    .as_slice()
+                    .expect("Y validation array must be contiguous for regression");
+                let val_tree_preds = crate::fork_parallel::pfor_range_map(0..vt.n_samples, |i| {
+                    tree.predict_from_transposed(vt, i as u32)
+                });
+                vp.iter_mut()
+                    .zip(val_tree_preds.iter())
                     .for_each(|(p, &tp)| *p += self.learning_rate * tp);
-
                 if (iter + 1) % 10 == 0 {
                     let mse: f64 = vp
                         .iter()
@@ -350,14 +352,20 @@ impl PKBoostRegressor {
         let mut preds = vec![self.base_score; transposed.n_samples];
 
         for tree in &self.trees {
-            preds.par_iter_mut().enumerate().for_each(|(i, p)| {
-                *p += self.learning_rate * tree.predict_from_transposed(&transposed, i)
+            let tree_preds = crate::fork_parallel::pfor_range_map(0..transposed.n_samples, |i| {
+                tree.predict_from_transposed(&transposed, i as u32)
             });
+            preds
+                .iter_mut()
+                .zip(tree_preds.iter())
+                .for_each(|(p, &tp)| {
+                    *p += self.learning_rate * tp;
+                });
         }
 
         // Apply log-link transformation for Poisson
         if matches!(self.loss_type, RegressionLossType::Poisson) {
-            preds.par_iter_mut().for_each(|p| *p = p.exp().min(1e15));
+            preds.iter_mut().for_each(|p| *p = p.exp().min(1e15));
         }
 
         Ok(Array1::from(preds))
@@ -384,10 +392,11 @@ impl PKBoostRegressor {
         }
 
         for tree in &self.trees {
-            for sample_idx in 0..n_samples {
+            for sample_idx in 0..n_samples as u32 {
                 let tree_pred = tree.predict_from_transposed(&transposed, sample_idx);
-                let last_pred = *cumulative_preds[sample_idx].last().unwrap();
-                cumulative_preds[sample_idx].push(last_pred + self.learning_rate * tree_pred);
+                let last_pred = *cumulative_preds[sample_idx as usize].last().unwrap();
+                cumulative_preds[sample_idx as usize]
+                    .push(last_pred + self.learning_rate * tree_pred);
             }
         }
 
@@ -480,4 +489,12 @@ pub fn calculate_r2(y_true: &[f64], y_pred: &[f64]) -> f64 {
         .map(|(yt, yp)| (yt - yp).powi(2))
         .sum();
     1.0 - (ss_res / ss_tot)
+}
+
+fn default_best_score_inf() -> f64 {
+    f64::INFINITY
+}
+
+fn is_inf(value: &f64) -> bool {
+    value.is_infinite()
 }
