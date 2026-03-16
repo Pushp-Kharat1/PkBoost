@@ -35,7 +35,7 @@ except ImportError:
     raise ImportError("PKBoost not installed. Run: pip install pkboost")
 
 
-class PKBoostClassifier(BaseEstimator, ClassifierMixin):
+class PKBoostClassifier(ClassifierMixin, BaseEstimator):
     """
     Scikit-learn compatible PKBoost binary classifier.
     
@@ -237,12 +237,13 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
         
         return np.column_stack([proba_class_0, proba_class_1])
     
-    def predict(self, X, threshold: float = 0.5):
+    def predict(self, X):
         """Predict class labels."""
         proba = self.predict_proba(X)[:, 1]
+        threshold = 0.5
         predictions = (proba >= threshold).astype(int)
         return self.classes_[predictions]
-    
+
     def predict_log_proba(self, X):
         """Predict class log-probabilities."""
         proba = self.predict_proba(X)
@@ -337,7 +338,7 @@ class PKBoostClassifier(BaseEstimator, ClassifierMixin):
         return instance
 
 
-class PKBoostRegressor(BaseEstimator, RegressorMixin):
+class PKBoostRegressor(RegressorMixin, BaseEstimator):
     """Scikit-learn compatible PKBoost regressor."""
     
     def __init__(self, auto: bool = True, random_state: Optional[int] = None):
@@ -394,7 +395,7 @@ class PKBoostRegressor(BaseEstimator, RegressorMixin):
         return r2_score(y, y_pred, sample_weight=sample_weight)
 
 
-class PKBoostAdaptiveClassifier(BaseEstimator, ClassifierMixin):
+class PKBoostAdaptiveClassifier(ClassifierMixin, BaseEstimator):
     """Scikit-learn compatible adaptive PKBoost classifier with drift detection."""
     
     def __init__(self, auto: bool = True):
@@ -455,12 +456,13 @@ class PKBoostAdaptiveClassifier(BaseEstimator, ClassifierMixin):
         
         return np.column_stack([proba_class_0, proba_class_1])
     
-    def predict(self, X, threshold: float = 0.5):
+    def predict(self, X):
         """Predict class labels."""
         proba = self.predict_proba(X)[:, 1]
+        threshold = 0.5
         predictions = (proba >= threshold).astype(int)
         return self.classes_[predictions]
-    
+
     def get_status(self):
         """Get current adaptation status."""
         check_is_fitted(self)
