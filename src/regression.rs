@@ -9,6 +9,7 @@ use crate::{
     tree::{OptimizedTreeShannon, TreeParams},
 };
 use ndarray::{Array1, ArrayView1, ArrayView2};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -18,7 +19,7 @@ pub enum RegressionLossType {
     Poisson,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MSELoss;
 
 impl MSELoss {

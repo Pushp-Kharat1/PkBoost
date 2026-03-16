@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HuberLoss {
     pub delta: f64, // Threshold for switching from squared to linear
