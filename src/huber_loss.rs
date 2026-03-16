@@ -1,6 +1,6 @@
-// Huber loss for robust regression (less sensitive to outliers than MSE)
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HuberLoss {
     pub delta: f64, // Threshold for switching from squared to linear
 }

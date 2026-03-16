@@ -9,15 +9,16 @@ use crate::{
     tree::{OptimizedTreeShannon, TreeParams},
 };
 use ndarray::{Array1, ArrayView1, ArrayView2};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum RegressionLossType {
     MSE,
     Huber { delta: f64 },
     Poisson,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct MSELoss;
 
 impl MSELoss {
@@ -69,7 +70,7 @@ pub fn calculate_mad(y: &[f64]) -> f64 {
     abs_devs[abs_devs.len() / 2]
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PKBoostRegressor {
     pub n_estimators: usize,
     pub learning_rate: f64,
@@ -85,6 +86,7 @@ pub struct PKBoostRegressor {
     pub trees: Vec<OptimizedTreeShannon>,
     base_score: f64,
     best_iteration: usize,
+    #[serde(default = "default_best_score_inf", skip_serializing_if = "is_inf")]
     best_score: f64,
     fitted: bool,
     pub loss_type: RegressionLossType,
@@ -250,6 +252,9 @@ impl PKBoostRegressor {
                 &sample_indices,
                 &feature_indices,
                 &params,
+                None, // weights
+                None, // full_preds
+                0.0,  // learning_rate (unused for standalone tree fit)
             );
 
             let tree_preds = crate::fork_parallel::pfor_range_map(0..n_samples, |i| {
@@ -483,4 +488,12 @@ pub fn calculate_r2(y_true: &[f64], y_pred: &[f64]) -> f64 {
         .map(|(yt, yp)| (yt - yp).powi(2))
         .sum();
     1.0 - (ss_res / ss_tot)
+}
+
+fn default_best_score_inf() -> f64 {
+    f64::INFINITY
+}
+
+fn is_inf(value: &f64) -> bool {
+    value.is_infinite()
 }
