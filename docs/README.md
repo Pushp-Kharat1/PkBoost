@@ -16,6 +16,7 @@ Use this page as the starting point for the repository's written documentation.
 - [PYTHON_BINDINGS.md](PYTHON_BINDINGS.md) - Python package installation, APIs, and examples
 - [MULTICLASS.md](MULTICLASS.md) - multi-class model behavior and usage notes
 - [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md) - helper scripts and data preparation utilities
+- [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - repository layout and where to start contributing
 
 ### Benchmarks and evaluation
 
