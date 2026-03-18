@@ -1,7 +1,7 @@
 # ✅ PKBoost v2.1.1 - Ready for GitHub Push!
 
 ## Repository
-**https://github.com/Pushp-Kharat1/PkBoost**
+**https://github.com/Pushp-Kharat1/pkboost**
 
 ## Status: READY ✅
 
@@ -12,12 +12,12 @@
 - ✅ Production-ready (Python 3.14 support)
 
 ### Documentation (6 Essential Files)
-1. ✅ **README.md** - Updated with v2.1 highlights
-2. ✅ **benchmark results/Extras/CHANGELOG_V2.md** - Complete changes
-3. ✅ **FEATURES.md** - 45 features documented
-4. ✅ **MULTICLASS.md** - Multi-class usage guide
-5. ✅ **SHANNON_ANALYSIS.md** - Entropy impact study
-6. ✅ **DRYBEAN_DRIFT_RESULTS.md** - Drift resilience analysis
+1. ✅ [`../README.md`](../README.md) - Updated with v2.1 highlights
+2. ✅ [`../benchmark results/Extras/CHANGELOG_V2.md`](../benchmark%20results/Extras/CHANGELOG_V2.md) - Complete changes
+3. ✅ [`FEATURES.md`](FEATURES.md) - 45 features documented
+4. ✅ [`MULTICLASS.md`](MULTICLASS.md) - Multi-class usage guide
+5. ✅ [`SHANNON_ANALYSIS.md`](SHANNON_ANALYSIS.md) - Entropy impact study
+6. ✅ [`DRYBEAN_DRIFT_RESULTS.md`](DRYBEAN_DRIFT_RESULTS.md) - Drift resilience analysis
 
 ### Key Achievements
 
@@ -86,7 +86,7 @@ git push -u origin main
 ## Next Steps
 
 1. **Push to GitHub** (see PUSH_TO_GITHUB.txt)
-2. **Create Release** at https://github.com/Pushp-Kharat1/PkBoost/releases/new
+2. **Create Release** at https://github.com/Pushp-Kharat1/pkboost/releases/new
 3. **Update README badges** (optional)
 4. **Announce** (optional): Reddit r/rust, r/MachineLearning
 

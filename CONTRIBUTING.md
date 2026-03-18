@@ -22,16 +22,16 @@ By participating in this project, you agree to maintain a respectful and inclusi
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/PkBoost.git
-   cd PkBoost
+   git clone https://github.com/YOUR_USERNAME/pkboost.git
+   cd pkboost
    ```
 3. **Add the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/Pushp-Kharat1/PkBoost.git
+   git remote add upstream https://github.com/Pushp-Kharat1/pkboost.git
    ```
 4. **Create a working branch**:
    ```bash
-   git checkout -b docs/short-description
+   git checkout -b <type>/short-description
    ```
 
 For a documentation-first tour of the repository, start with [docs/README.md](docs/README.md).
@@ -116,6 +116,9 @@ Documentation improvements are a great way to contribute. Useful updates include
 Before opening a docs PR:
 
 ```bash
+# Example docs branch name
+git checkout -b docs/short-description
+
 # Optional but recommended validation steps
 cargo test
 python -m pytest tests/
@@ -163,7 +166,7 @@ cargo fmt && cargo clippy && cargo test
 ### 1. Create a Feature Branch
 
 ```bash
-git checkout -b docs/your-change-name
+git checkout -b <type>/short-description
 ```
 
 ### 2. Make Your Changes
@@ -176,7 +179,7 @@ git checkout -b docs/your-change-name
 
 ```bash
 git add .
-git commit -m "docs: describe the improvement"
+git commit -m "<type>: describe the improvement"
 ```
 
 Use conventional commit messages:
@@ -191,8 +194,13 @@ Use conventional commit messages:
 ### 4. Push and Create PR
 
 ```bash
-git push origin docs/your-change-name
+git push origin <type>/short-description
 ```
+
+Examples:
+- `docs: clarify benchmark setup`
+- `fix: handle empty validation input`
+- `perf: speed up histogram building`
 
 Then open a Pull Request on GitHub with:
 - Clear title describing the change

@@ -41,7 +41,7 @@ See [the v2 changelog](benchmark%20results/Extras/CHANGELOG_V2.md) for full deta
 - **[Scikit-learn Wrapper Guide](pkboost_sklearn/README.md)** - sklearn-style interface and integration examples
 - **[Benchmark Reproduction](docs/BENCHMARK_REPRODUCTION.md)** - Complete guide to reproduce all results
 - **[Drift Benchmark Report](docs/DRIFT_BENCHMARK_REPORT.md)** - 16 drift scenarios analysis
-- **[Scripts Guide](docs/SCRIPTS_GUIDE.md)** - Data preparation and utility scripts
+- **[Scripts Guide](docs/SCRIPTS_GUIDE.md)** - Current examples, utility entrypoints, and legacy notes
 - **[Features List](docs/FEATURES.md)** - All 45 production features
 - **[Contributing Guide](CONTRIBUTING.md)** - Workflow for contributors and documentation updates
 - **[Changelog v2.0](benchmark%20results/Extras/CHANGELOG_V2.md)** - What's new in version 2.0
@@ -57,8 +57,8 @@ Try the hosted benchmark notebook on [Kaggle](https://www.kaggle.com/code/pushpk
 Clone the repository and build:
 
 ```bash
-git clone https://github.com/Pushp-Kharat1/PkBoost.git
-cd PkBoost
+git clone https://github.com/Pushp-Kharat1/pkboost.git
+cd pkboost
 cargo build --release
 ```
 
