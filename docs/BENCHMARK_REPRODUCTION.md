@@ -2,6 +2,8 @@
 
 Complete guide for reproducing all benchmarks from the PKBoost paper, including standard performance comparisons and drift resilience tests.
 
+> Repository snapshot note: the currently tracked Rust benchmark binary is `benchmark_fraud`, and the runnable Python examples live under `examples/`.
+
 ## Table of Contents
 
 - [Quick Start (5 minutes)](#quick-start-5-minutes)
@@ -41,7 +43,7 @@ pip install pandas numpy scikit-learn lightgbm xgboost kaggle matplotlib joblib
 
 ---
 
-## For Python Quick start please refer to [PKBoostPython.md](PKBoostPython.md)
+For Python quick start instructions, see [PYTHON_BINDINGS.md](PYTHON_BINDINGS.md).
 
 ## Quick Start (5 minutes)
 
@@ -49,8 +51,8 @@ Use included sample data to verify PKBoost works.
 
 ### Step 1: Clone Repository
 ```bash
-git clone https://github.com/Pushp-Kharat1/pkboost.git
-cd pkboost
+git clone https://github.com/Pushp-Kharat1/PkBoost.git
+cd PkBoost
 ```
 
 ### Step 2: Verify Sample Data
@@ -63,7 +65,7 @@ These files are included—a subset of the Credit Card dataset.
 
 ### Step 3: Run Rust Benchmark
 ```bash
-cargo run --release --bin benchmark
+cargo run --release --bin benchmark_fraud
 ```
 
 **What happens:**
@@ -177,59 +179,34 @@ python run_all_benchmarks.py
 Once data is prepared:
 ```bash
 # Uses data/ folder with train/val/test CSV files
-cargo run --release --bin benchmark
+cargo run --release --bin benchmark_fraud
 ```
 
 **Runtime:** ~10-15 minutes (Credit Card dataset)
 
 ### Standard Performance Comparison (Python)
 ```bash
-# After running prepare_data.py
-python run_single_benchmark.py
+# Uses the included sample splits in data/
+python examples/benchmark_fraud.py
 ```
 
-This runs LightGBM, XGBoost, and PKBoost (via Python bindings) on the prepared data.
+This compares PKBoost on the included credit-card benchmark split through the Python package interface.
 
-### Drift Resilience Test
+### Drift Resilience Reference
 
-Test how models handle concept drift:
+For the current repository snapshot, use [DRIFT_BENCHMARK_REPORT.md](DRIFT_BENCHMARK_REPORT.md) for the documented drift scenarios and results.
+
+For Python-side API validation, you can also run:
+
 ```bash
-python drift_comparison_all.py
+python examples/comprehensive_example.py
 ```
 
-**What this does:**
-- Trains models on clean data
-- Introduces covariate shift (feature distribution changes)
-- Tests on drifted data
-- Compares degradation across models
-- Generates visualization: `drift_comparison_complete.png`
+This validates the Python APIs, including adaptive model entrypoints, against runnable examples.
 
-**Expected output:**
-```
-=== PHASE 1: NORMAL DATA ===
-LightGBM - PR-AUC: 0.7931
-XGBoost  - PR-AUC: 0.7458
+### Adaptive Living Booster Notes
 
-=== PHASE 2: APPLYING DRIFT ===
-LightGBM - PR-AUC: 0.4556 (42.5% degradation)
-XGBoost  - PR-AUC: 0.5082 (31.8% degradation)
-```
-
-### Adaptive Living Booster Test (Rust)
-
-Test metamorphosis mechanism:
-```bash
-cargo run --release --bin test_drift
-```
-
-Simulates streaming batches with gradual drift and monitors automatic adaptation.
-
-### Adaptive Living Booster (Python)
-```bash
-python example_creditcard_drift.py
-```
-
-Demonstrates real-time drift detection and metamorphosis using Python bindings.
+Adaptive behavior is currently documented in [PYTHON_BINDINGS.md](PYTHON_BINDINGS.md) and the drift benchmark report rather than in a separately tracked Rust binary.
 
 ---
 
@@ -467,10 +444,10 @@ python prepare_data.py hospital/disease-prediction diagnosis positive
 ### Step 3: Run Benchmark
 ```bash
 # Rust (uses data/*.csv automatically)
-cargo run --release --bin benchmark
+cargo run --release --bin benchmark_fraud
 
 # Python
-python run_single_benchmark.py
+python examples/benchmark_fraud.py
 ```
 
 ### What prepare_data.py Does
@@ -533,7 +510,7 @@ free -h >> reproduction_info.txt
 ```bash
 for i in {1..5}; do
   echo "Run $i"
-  cargo run --release --bin benchmark | tee results_run_$i.txt
+  cargo run --release --bin benchmark_fraud | tee results_run_$i.txt
 done
 ```
 
@@ -550,29 +527,22 @@ Verify all scripts use `random_state=42`:
 
 ## File Structure After Preparation
 ```
-pkboost/
+PkBoost/
 ├── data/
-│   ├── train_large.csv          # 60% of data
-│   ├── val_large.csv            # 20% of data
-│   ├── test_large.csv           # 20% of data
-│   ├── preprocessor.pkl         # For inference
-│   ├── creditcard_train.csv     # Sampled versions (optional)
+│   ├── creditcard_train.csv     # Sample benchmark split
 │   ├── creditcard_val.csv
 │   └── creditcard_test.csv
-├── raw_data/                    # Downloaded datasets (auto-cleaned after)
-├── scripts/                     # Python utilities
-│   ├── prepare_data.py
-│   ├── create_extreme_imbalance.py
-│   ├── run_all_benchmarks.py
-│   └── drift_comparison_all.py
-├── src/                         # Rust source
+├── docs/                        # Guides and benchmark reports
+├── examples/
+│   ├── benchmark_fraud.py
+│   ├── comprehensive_example.py
+│   └── test_simple.py
+├── pkboost_sklearn/             # sklearn-compatible Python wrapper
+├── src/
 │   └── bin/
-│       ├── benchmark.rs
-│       └── test_drift.rs
-└── python/                      # Python bindings
-    ├── example.py
-    ├── example_creditcard.py
-    └── example_creditcard_drift.py
+│       └── benchmark_fraud.rs
+├── temp/                        # Experimental comparison scripts
+└── tests/                       # Python-side test coverage
 ```
 
 ---

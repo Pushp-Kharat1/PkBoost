@@ -13,7 +13,7 @@
 
 ### Documentation (6 Essential Files)
 1. ✅ **README.md** - Updated with v2.1 highlights
-2. ✅ **CHANGELOG_V2.md** - Complete changes
+2. ✅ **benchmark results/Extras/CHANGELOG_V2.md** - Complete changes
 3. ✅ **FEATURES.md** - 45 features documented
 4. ✅ **MULTICLASS.md** - Multi-class usage guide
 5. ✅ **SHANNON_ANALYSIS.md** - Entropy impact study
