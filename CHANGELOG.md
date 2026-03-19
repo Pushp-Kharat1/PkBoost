@@ -5,6 +5,27 @@ All notable changes to [PKBoost](https://pypi.org/project/pkboost/) are document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-03-19
+
+### Added
+
+- Serialization support for `PKBoostRegressor`
+- `Clone` derive on `OptimizedPKBoostShannon`
+- ARM64 scalar fallbacks for x86 SIMD paths (`build_multi_histogram_4x`, `subtract_into`, `as_m128`), enabling native macOS arm64 compilation without cross-compilation workarounds
+
+### Changed
+
+- **~2.3x training throughput** (upstream perf sync): f32 SIMD histograms with AoS `SampleData` layout, `ForkUnion` parallelism replacing Rayon in hot paths
+- Pre-allocated f32 grad/hess buffers and index buffers outside the boosting loop — eliminates per-iteration heap allocations
+- Fused update+clamp into a single sequential pass; `predict_batch_into` for in-place tree prediction, removing a Vec allocation per tree per iteration
+- `fit_optimized` signature extended with `full_preds` and `learning_rate` parameters
+
+### Fixed
+
+- Stale `rayon` imports removed from `huber_loss.rs` and `regression.rs`
+- Duplicate `serde` import removed from `huber_loss.rs`
+- `fit_optimized` call sites updated for new 9-argument signature in `living_booster.rs`, `living_regressor.rs`, `model.rs`, and `regression.rs`
+
 ## [2.3.6] - 2026-03-08
 
 ### Fixed

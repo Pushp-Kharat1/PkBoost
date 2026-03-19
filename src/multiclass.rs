@@ -1,7 +1,6 @@
 // Multi-class classification using One-vs-Rest with softmax
 use crate::model::OptimizedPKBoostShannon;
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use rayon::prelude::*;
 
 pub struct MultiClassPKBoost {
     classifiers: Vec<OptimizedPKBoostShannon>,
@@ -40,44 +39,41 @@ impl MultiClassPKBoost {
         let x_owned: Array2<f64> = x.to_owned();
         let eval_owned = eval_set.map(|(x_val, y_val)| (x_val.to_owned(), y_val.to_owned()));
 
-        self.classifiers = (0..self.n_classes)
-            .into_par_iter()
-            .map(|class_idx| {
-                let y_binary: Array1<f64> = Array1::from_iter(y_slice.iter().map(|&label| {
-                    if (label as usize) == class_idx {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }));
-
-                let eval_binary = eval_owned.as_ref().map(|(x_val, y_val)| {
-                    let y_val_slice = y_val.as_slice().unwrap();
-                    let y_val_binary: Array1<f64> =
-                        Array1::from_iter(y_val_slice.iter().map(|&label| {
-                            if (label as usize) == class_idx {
-                                1.0
-                            } else {
-                                0.0
-                            }
-                        }));
-                    (x_val.clone(), y_val_binary)
-                });
-
-                let mut clf = OptimizedPKBoostShannon::auto(x_owned.view(), y_binary.view());
-
-                let eval_ref = eval_binary
-                    .as_ref()
-                    .map(|(x_v, y_v)| (x_v.view(), y_v.view()));
-                clf.fit(x_owned.view(), y_binary.view(), eval_ref, false)
-                    .ok();
-
-                if verbose {
-                    println!("  Class {} trained", class_idx);
+        self.classifiers = crate::fork_parallel::pfor_range_map(0..self.n_classes, |class_idx| {
+            let y_binary: Array1<f64> = Array1::from_iter(y_slice.iter().map(|&label| {
+                if (label as usize) == class_idx {
+                    1.0
+                } else {
+                    0.0
                 }
-                clf
-            })
-            .collect();
+            }));
+
+            let eval_binary = eval_owned.as_ref().map(|(x_val, y_val)| {
+                let y_val_slice = y_val.as_slice().unwrap();
+                let y_val_binary: Array1<f64> =
+                    Array1::from_iter(y_val_slice.iter().map(|&label| {
+                        if (label as usize) == class_idx {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }));
+                (x_val.clone(), y_val_binary)
+            });
+
+            let mut clf = OptimizedPKBoostShannon::auto(x_owned.view(), y_binary.view());
+
+            let eval_ref = eval_binary
+                .as_ref()
+                .map(|(x_v, y_v)| (x_v.view(), y_v.view()));
+            clf.fit(x_owned.view(), y_binary.view(), eval_ref, false)
+                .ok();
+
+            if verbose {
+                println!("  Class {} trained", class_idx);
+            }
+            clf
+        });
 
         self.fitted = true;
         if verbose {
@@ -95,15 +91,12 @@ impl MultiClassPKBoost {
 
         let n_samples = x.nrows();
 
-        // Collect logits from each classifier
-        let logits: Vec<Array1<f64>> = self
-            .classifiers
-            .par_iter()
-            .map(|clf| {
-                clf.predict_proba(x)
-                    .unwrap_or_else(|_| Array1::zeros(n_samples))
-            })
-            .collect();
+        // Collect logits from each classifier using ForkUnion
+        let logits = crate::fork_parallel::pfor_range_map(0..self.classifiers.len(), |i| {
+            let clf = &self.classifiers[i];
+            clf.predict_proba(x)
+                .unwrap_or_else(|_| Array1::zeros(n_samples))
+        });
 
         // Build output array (n_samples, n_classes)
         let mut probs = Array2::zeros((n_samples, self.n_classes));

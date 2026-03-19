@@ -9,7 +9,6 @@ use crate::model::OptimizedPKBoostShannon;
 use crate::optimized_data::TransposedData;
 use crate::tree::{OptimizedTreeShannon, TreeParams};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -605,7 +604,7 @@ impl AdversarialLivingBooster {
 
         let n_features = buffer_x.ncols();
         let feature_indices: Vec<usize> = (0..n_features).collect();
-        let sample_indices: Vec<usize> = (0..buffer_x.nrows()).collect();
+        let sample_indices: Vec<u32> = (0..buffer_x.nrows() as u32).collect();
 
         let tree_params = TreeParams {
             min_samples_split: self.primary.min_samples_split,
@@ -632,23 +631,26 @@ impl AdversarialLivingBooster {
                 self.primary
                     .loss_fn
                     .hessian(&buffer_y, &raw_preds, self.primary.scale_pos_weight);
+            let grad_f32: Vec<f32> = grad.iter().map(|&g| g as f32).collect();
+            let hess_f32: Vec<f32> = hess.iter().map(|&h| h as f32).collect();
 
             let mut new_tree = OptimizedTreeShannon::new(self.primary.max_depth);
             new_tree.fit_optimized(
                 &transposed_data,
                 &buffer_y,
-                &grad,
-                &hess,
+                &grad_f32,
+                &hess_f32,
                 &sample_indices,
                 &feature_indices,
                 &tree_params,
+                None,
+                0.0,
             );
 
             // get predictions from new tree and update ensemble
-            let tree_preds: Vec<f64> = (0..buffer_x.nrows())
-                .into_par_iter()
-                .map(|i| new_tree.predict_from_transposed(&transposed_data, i))
-                .collect();
+            let tree_preds = crate::fork_parallel::pfor_range_map(0..buffer_x.nrows(), |i| {
+                new_tree.predict_from_transposed(&transposed_data, i as u32)
+            });
 
             for (i, &tree_pred) in tree_preds.iter().enumerate() {
                 raw_preds[i] += self.primary.learning_rate * tree_pred;
