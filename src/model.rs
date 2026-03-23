@@ -429,11 +429,18 @@ impl OptimizedPKBoostShannon {
         for iteration in 0..self.n_estimators {
             let mut rng = rand::thread_rng();
 
-            // stochastic gradient boosting - subsample rows
+            // class-balanced subsampling: always include all positives,
+            // fill remaining budget with random negatives.
+            // prevents trees from accidentally training on zero-positive subsamples
+            // under extreme class imbalance (e.g. 3400:1).
             let sample_size = (self.subsample * n_samples as f64) as usize;
-            let mut sample_indices: Vec<usize> = (0..n_samples).collect();
-            sample_indices.shuffle(&mut rng);
-            sample_indices.truncate(sample_size);
+            let pos_indices: Vec<usize> = (0..n_samples).filter(|&i| y_slice[i] > 0.5).collect();
+            let mut neg_indices: Vec<usize> = (0..n_samples).filter(|&i| y_slice[i] <= 0.5).collect();
+            neg_indices.shuffle(&mut rng);
+            let n_neg = sample_size.saturating_sub(pos_indices.len());
+            neg_indices.truncate(n_neg);
+            let mut sample_indices: Vec<usize> = pos_indices;
+            sample_indices.extend(neg_indices);
 
             let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
             let mut feature_indices: Vec<usize> = (0..n_features).collect();

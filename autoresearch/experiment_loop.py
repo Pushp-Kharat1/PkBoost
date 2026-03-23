@@ -320,6 +320,12 @@ def main():
             n_kept += 1
             record["outcome"] = "kept"
             record["kept"] = True
+            # Commit immediately so future reverts don't wipe this improvement
+            subprocess.run(
+                ["git", "commit", "-am",
+                 f"autoresearch exp{exp_num}: {hypothesis[:72]}"],
+                cwd=PKBOOST_DIR, check=True,
+            )
             print(f"  KEPT ✓  PR AUC: {score:.5f}  (+{delta:+.5f})  [{n_kept} improvements so far]")
         else:
             record["outcome"] = "reverted"

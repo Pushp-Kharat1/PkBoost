@@ -5,6 +5,17 @@ All notable changes to [PKBoost](https://pypi.org/project/pkboost/) are document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Autoresearch harness** (`autoresearch/`): Claude-driven experiment loop that proposes targeted Rust changes, compiles, benchmarks, and keeps improvements autonomously. Optimises PR AUC on the SVP Series A model (3400:1 class imbalance).
+- **Focal loss** (`src/loss.rs`): `focal_grad_hess()` helper; `gradient_hessian()` now accepts a `focal_gamma: f64` parameter. At `focal_gamma=0.0` the computation is identical to standard log-loss. Exposed via `focal_gamma` kwarg in Python bindings and sklearn wrapper (`default=0.0`).
+
+### Changed
+
+- **Class-balanced subsampling** (`src/model.rs`): Each boosting iteration now always includes all positive-class samples in its subsample and fills the remaining budget with randomly drawn negatives. Prevents trees from training on zero-positive subsamples under extreme class imbalance. Benchmarked: **+6.6% PR AUC** on the Series A model (0.2221 → 0.2367).
+
 ## [2.4.0] - 2026-03-19
 
 ### Added
