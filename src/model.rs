@@ -564,14 +564,24 @@ impl OptimizedPKBoostShannon {
                     let val_roc = calculate_roc_auc(y_val_slice, &val_probs);
                     let val_pr = calculate_pr_auc(y_val_slice, &val_probs); // PR-AUC better for imbalanced data
 
-                    // smooth metrics over last 3 evaluations to reduce noise
-                    if self.metric_history.len() >= 3 {
+                    // smooth metrics over last 5 evaluations with exponential weighting to reduce noise
+                    // at 3400:1 imbalance, PR-AUC is very noisy; EMA gives more weight to recent values
+                    if self.metric_history.len() >= 5 {
                         self.metric_history.remove(0);
                     }
                     self.metric_history.push(val_pr);
 
-                    let smoothed_metric =
-                        self.metric_history.iter().sum::<f64>() / self.metric_history.len() as f64;
+                    let smoothed_metric = if self.metric_history.len() == 1 {
+                        self.metric_history[0]
+                    } else {
+                        // Exponential moving average: alpha=0.4 gives ~60% weight to recent values
+                        let alpha = 0.4;
+                        let mut ema = self.metric_history[0];
+                        for &val in &self.metric_history[1..] {
+                            ema = alpha * val + (1.0 - alpha) * ema;
+                        }
+                        ema
+                    };
 
                     if verbose && ((iteration + 1) % 20 == 0 || iteration == 0) {
                         let total_time = fit_start_time.elapsed().as_secs_f64();
