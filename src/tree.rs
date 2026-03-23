@@ -344,10 +344,9 @@ impl OptimizedTreeShannon {
             // proportional to how few samples support them. This is critical
             // under extreme class imbalance where positive-class leaves may
             // be estimated from very few samples.
-            // leaf = -g_total / (h_total + reg_lambda + laplace_smooth)
-            // laplace_smooth adds effective "pseudo-observations" that pull
-            // the leaf toward zero, with diminishing effect as n_samples grows.
-            let laplace_smooth = 10.0 / (1.0 + (n_samples as f64 / 50.0));
+            // Uses exponential decay: strong smoothing for tiny leaves (n<20),
+            // negligible for large leaves (n>200).
+            let laplace_smooth = 15.0 * (-0.03 * n_samples as f64).exp();
 
             if gradient_norm < params.min_child_weight * 0.01 {
                 self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda + laplace_smooth));
