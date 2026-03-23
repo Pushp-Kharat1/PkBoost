@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    "anthropic>=0.86.0",
     "numpy>=1.24.0",
     "polars>=1.39.3",
 ]
