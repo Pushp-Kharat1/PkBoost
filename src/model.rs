@@ -31,6 +31,7 @@ pub struct PKBoostBuilder {
     histogram_bins: Option<usize>,
     mi_weight: Option<f64>,
     scale_pos_weight: Option<f64>,
+    focal_gamma: Option<f64>,
     use_auto_params: bool,
 }
 
@@ -50,6 +51,7 @@ impl Default for PKBoostBuilder {
             histogram_bins: None,
             mi_weight: None,
             scale_pos_weight: None,
+            focal_gamma: None,
             use_auto_params: false,
         }
     }
@@ -130,6 +132,11 @@ impl PKBoostBuilder {
         self
     }
 
+    pub fn focal_gamma(mut self, gamma: f64) -> Self {
+        self.focal_gamma = Some(gamma);
+        self
+    }
+
     pub fn build_with_data(
         self,
         x: ArrayView2<'_, f64>,
@@ -158,6 +165,7 @@ impl PKBoostBuilder {
                 histogram_bins: 0,
                 mi_weight: 0.0,
                 scale_pos_weight: 0.0,
+                focal_gamma: 0.0,
                 trees: Vec::new(),
                 base_score: 0.0,
                 best_iteration: 0,
@@ -191,6 +199,7 @@ impl PKBoostBuilder {
                 histogram_bins: self.histogram_bins.unwrap_or(model.histogram_bins),
                 mi_weight: self.mi_weight.unwrap_or(model.mi_weight),
                 scale_pos_weight: self.scale_pos_weight.unwrap_or(model.scale_pos_weight),
+                focal_gamma: self.focal_gamma.unwrap_or(0.0),
                 trees: model.trees,
                 base_score: model.base_score,
                 best_iteration: model.best_iteration,
@@ -223,6 +232,7 @@ impl PKBoostBuilder {
             histogram_bins: self.histogram_bins.unwrap_or(32),
             mi_weight: self.mi_weight.unwrap_or(0.3),
             scale_pos_weight: self.scale_pos_weight.unwrap_or(1.0),
+            focal_gamma: self.focal_gamma.unwrap_or(0.0),
             trees: Vec::new(),
             base_score: 0.0,
             best_iteration: 0,
@@ -282,6 +292,8 @@ pub struct OptimizedPKBoostShannon {
     pub histogram_bins: usize,
     pub mi_weight: f64,        // weight for mutual information (entropy) term
     pub scale_pos_weight: f64, // upweight minority class
+    #[serde(default)]
+    pub focal_gamma: f64,      // focal loss exponent (0.0 = standard log-loss)
     pub trees: Vec<OptimizedTreeShannon>,
     base_score: f64,
     best_iteration: usize,
@@ -432,7 +444,7 @@ impl OptimizedPKBoostShannon {
             let t0 = Instant::now();
             let (grad, hess) =
                 self.loss_fn
-                    .gradient_hessian(y_slice, &train_preds, self.scale_pos_weight);
+                    .gradient_hessian(y_slice, &train_preds, self.scale_pos_weight, self.focal_gamma);
             time_grad_hess += t0.elapsed();
 
             let mut tree = OptimizedTreeShannon::new(self.max_depth);

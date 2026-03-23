@@ -9,6 +9,45 @@ const PARALLEL_THRESHOLD: usize = 10000;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OptimizedShannonLoss;
 
+/// Compute focal loss gradient and hessian for a single sample.
+///
+/// Focal loss: FL = -[(1-pt)^γ · log(pt)]  where pt = p if y=1, (1-p) if y=0.
+/// At focal_gamma=0 this reduces exactly to standard weighted log-loss.
+///
+/// Gradient derivation (w.r.t. raw log-odds f, p = sigmoid(f)):
+///   y=1: g = (1-p)^γ · (γ·p·ln(p) − (1-p))
+///   y=0: g = p^γ    · (p − γ·(1-p)·ln(1-p))
+///
+/// Hessian: approximate as focal_weight · p · (1-p).  The exact hessian has
+/// log terms that are numerically unstable at extremes; this approximation is
+/// standard practice and exact at γ=0.
+#[inline(always)]
+fn focal_grad_hess(y: f64, p_raw: f64, weight: f64, focal_gamma: f64) -> (f64, f64) {
+    let p = p_raw.clamp(1e-7, 1.0 - 1e-7);
+    let q = 1.0 - p;
+
+    if focal_gamma == 0.0 {
+        // Fast path: standard weighted log-loss
+        return (weight * (p - y), weight * p * q.max(1e-6));
+    }
+
+    if y > 0.5 {
+        // Positive class: focal weight = (1-p)^γ
+        let fw = q.powf(focal_gamma);
+        // Exact gradient: (1-p)^γ · (γ·p·ln(p) − (1-p))
+        let grad = weight * fw * (focal_gamma * p * p.ln() - q);
+        let hess = (weight * fw * p * q).max(1e-6);
+        (grad, hess)
+    } else {
+        // Negative class: focal weight = p^γ
+        let fw = p.powf(focal_gamma);
+        // Exact gradient: p^γ · (p − γ·(1-p)·ln(1-p))
+        let grad = weight * fw * (p - focal_gamma * q * q.ln());
+        let hess = (weight * fw * p * q).max(1e-6);
+        (grad, hess)
+    }
+}
+
 impl OptimizedShannonLoss {
     pub fn new() -> Self {
         Self
@@ -20,28 +59,26 @@ impl OptimizedShannonLoss {
         (pos / neg.max(1.0)).ln()
     }
 
-    /// OPTIMIZED: Fused gradient and hessian calculation
-    /// Computes both in a single pass, avoiding redundant sigmoid calculations
+    /// Fused gradient and hessian calculation.
+    /// focal_gamma=0.0 is the standard weighted log-loss (no overhead).
     #[inline]
     pub fn gradient_hessian(
         &self,
         y_true: &[f64],
         y_pred: &[f64],
         scale_pos_weight: f64,
+        focal_gamma: f64,
     ) -> (Vec<f64>, Vec<f64>) {
         let n = y_true.len();
 
         if n >= PARALLEL_THRESHOLD {
-            // Parallel path for large arrays
             let results: Vec<(f64, f64)> = y_pred
                 .par_iter()
                 .zip(y_true.par_iter())
                 .map(|(&pred, &true_y)| {
                     let prob = 1.0 / (1.0 + (-pred).exp());
                     let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
-                    let grad = weight * (prob - true_y);
-                    let hess = weight * prob * (1.0 - prob).max(1e-6);
-                    (grad, hess)
+                    focal_grad_hess(true_y, prob, weight, focal_gamma)
                 })
                 .collect();
 
@@ -53,15 +90,14 @@ impl OptimizedShannonLoss {
             }
             (grad, hess)
         } else {
-            // Sequential path for small arrays - avoids Rayon overhead
             let mut grad = Vec::with_capacity(n);
             let mut hess = Vec::with_capacity(n);
-
             for (&pred, &true_y) in y_pred.iter().zip(y_true.iter()) {
                 let prob = 1.0 / (1.0 + (-pred).exp());
                 let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
-                grad.push(weight * (prob - true_y));
-                hess.push(weight * prob * (1.0 - prob).max(1e-6));
+                let (g, h) = focal_grad_hess(true_y, prob, weight, focal_gamma);
+                grad.push(g);
+                hess.push(h);
             }
             (grad, hess)
         }
@@ -69,12 +105,12 @@ impl OptimizedShannonLoss {
 
     /// Legacy: separate gradient (for backward compatibility)
     pub fn gradient(&self, y_true: &[f64], y_pred: &[f64], scale_pos_weight: f64) -> Vec<f64> {
-        self.gradient_hessian(y_true, y_pred, scale_pos_weight).0
+        self.gradient_hessian(y_true, y_pred, scale_pos_weight, 0.0).0
     }
 
     /// Legacy: separate hessian (for backward compatibility)
     pub fn hessian(&self, y_true: &[f64], y_pred: &[f64], scale_pos_weight: f64) -> Vec<f64> {
-        self.gradient_hessian(y_true, y_pred, scale_pos_weight).1
+        self.gradient_hessian(y_true, y_pred, scale_pos_weight, 0.0).1
     }
 
     pub fn sigmoid(&self, preds: &[f64]) -> Vec<f64> {

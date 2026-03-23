@@ -17,6 +17,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.24.0",
+    "polars>=1.39.3",
 ]
 
 [project.optional-dependencies]
