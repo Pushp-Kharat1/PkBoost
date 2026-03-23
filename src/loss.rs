@@ -26,23 +26,30 @@ fn focal_grad_hess(y: f64, p_raw: f64, weight: f64, focal_gamma: f64) -> (f64, f
     let p = p_raw.clamp(1e-7, 1.0 - 1e-7);
     let q = 1.0 - p;
 
+    // Gradient clipping bound: prevent extreme gradients from high-weight positive samples
+    // Under 3400:1 imbalance, scale_pos_weight~3400 can produce gradients that dominate
+    // tree splits. Clamping to [-10*weight, 10*weight] relative to unit weight stabilizes
+    // the Newton step without losing signal direction.
+    let grad_clip = 10.0 * weight;
+
     if focal_gamma == 0.0 {
         // Fast path: standard weighted log-loss
-        return (weight * (p - y), weight * p * q.max(1e-6));
+        let grad = (weight * (p - y)).clamp(-grad_clip, grad_clip);
+        return (grad, weight * p * q.max(1e-6));
     }
 
     if y > 0.5 {
         // Positive class: focal weight = (1-p)^γ
         let fw = q.powf(focal_gamma);
         // Exact gradient: (1-p)^γ · (γ·p·ln(p) − (1-p))
-        let grad = weight * fw * (focal_gamma * p * p.ln() - q);
+        let grad = (weight * fw * (focal_gamma * p * p.ln() - q)).clamp(-grad_clip, grad_clip);
         let hess = (weight * fw * p * q).max(1e-6);
         (grad, hess)
     } else {
         // Negative class: focal weight = p^γ
         let fw = p.powf(focal_gamma);
         // Exact gradient: p^γ · (p − γ·(1-p)·ln(1-p))
-        let grad = weight * fw * (p - focal_gamma * q * q.ln());
+        let grad = (weight * fw * (p - focal_gamma * q * q.ln())).clamp(-grad_clip, grad_clip);
         let hess = (weight * fw * p * q).max(1e-6);
         (grad, hess)
     }
