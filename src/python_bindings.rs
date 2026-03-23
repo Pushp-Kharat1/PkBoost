@@ -67,7 +67,8 @@ impl PKBoostClassifier {
         subsample=0.8,
         colsample_bytree=0.8,
         scale_pos_weight=1.0,
-        focal_gamma=0.0
+        focal_gamma=0.0,
+        early_stopping_rounds=75
     ))]
     fn new(
         n_estimators: usize,
@@ -81,6 +82,7 @@ impl PKBoostClassifier {
         colsample_bytree: f64,
         scale_pos_weight: f64,
         focal_gamma: f64,
+        early_stopping_rounds: usize,
     ) -> Self {
         let mut model = OptimizedPKBoostShannon::new();
         model.n_estimators = n_estimators;
@@ -94,6 +96,7 @@ impl PKBoostClassifier {
         model.colsample_bytree = colsample_bytree;
         model.scale_pos_weight = scale_pos_weight;
         model.focal_gamma = focal_gamma;
+        model.early_stopping_rounds = early_stopping_rounds;
 
         Self {
             model: Some(model),

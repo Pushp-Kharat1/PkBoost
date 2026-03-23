@@ -16,6 +16,7 @@ insensitive to improvements that matter operationally (top-100 precision).
 - `src/model.rs` — training loop, subsampling, hyperparameter defaults
 - `src/tree.rs` — tree building, leaf computation, regularization
 - `src/histogram_builder.rs` — feature binning strategy
+- `src/metrics.rs` — PR-AUC / ROC-AUC computation used for early stopping signal
 
 ## Hard constraints
 1. Do NOT change the signature or semantics of `predict_contributions()` — production
@@ -44,6 +45,15 @@ insensitive to improvements that matter operationally (top-100 precision).
 **Histogram** (`src/histogram_builder.rs`):
 - Bins continuous features into i16 using equal-width binning
 - Default: 32 bins per feature
+
+**Metrics / Early stopping** (`src/metrics.rs`):
+- `calculate_pr_auc` / `calculate_roc_auc` used for validation-set early stopping
+- Benchmark now passes a validation split (Q2–Q4 2022) as `eval_set`
+- Early stopping fires after `early_stopping_rounds=30` without improvement
+- PR-AUC uses left-Riemann sum (no interpolation between thresholds)
+- `AUCCalculator` re-sorts scores on every call; sorted indices are cached between calls
+- Shannon entropy uses a 10,000-bin lookup table (`ENTROPY_LUT_SIZE`)
+- The benchmark reports both `val_pr_auc` (early-stop signal) and `pr_auc` (test set, primary metric)
 
 ## Already tried — do NOT re-propose these
 
@@ -87,6 +97,22 @@ changes that address the fundamental imbalance and gradient dynamics.
 7. **Base score warm start** — currently base_score is log(pos_rate/(1-pos_rate)).
    Try initializing to a slightly more optimistic value (e.g. multiply by 0.9)
    to reduce early over-confidence on negatives.
+
+8. **Better PR-AUC interpolation for early stopping** (`src/metrics.rs`) — the
+   current implementation uses a left-Riemann sum which underestimates area when
+   the curve has large recall jumps. Use linear interpolation between consecutive
+   (recall, precision) points: `auc += 0.5 * (p_prev + p_curr) * (r_curr - r_prev)`.
+   A more accurate early-stopping signal should let the model train longer where useful.
+
+9. **Entropy LUT resolution** (`src/metrics.rs`) — Shannon entropy uses 10,000 bins
+   for the lookup table. At 3400:1 imbalance the positive ratio is ~0.00029, landing
+   in bin 2-3. Increase to 100,000 bins for better resolution at extreme imbalance,
+   or switch to direct computation when `p < 0.001`.
+
+10. **Early stopping on smoothed PR-AUC** (`src/model.rs`) — the current smoothing
+    window averages the last 3 validation PR-AUC values. With 3400:1 imbalance the
+    signal is noisy; try a window of 5 or use exponential moving average instead of
+    a sliding window mean.
 
 ## Experiment protocol
 For each proposed change:

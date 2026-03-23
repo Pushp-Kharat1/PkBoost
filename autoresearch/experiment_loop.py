@@ -42,6 +42,7 @@ SOURCE_FILES = [
     "src/model.rs",
     "src/tree.rs",
     "src/histogram_builder.rs",
+    "src/metrics.rs",
 ]
 
 

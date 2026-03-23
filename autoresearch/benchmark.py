@@ -37,23 +37,27 @@ from pkboost_sklearn.sklearn_interface import PKBoostClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-# Fixed train/test split — never changes between experiments
-# Train: Q1 2019 – Q4 2022 (16 quarters of history)
-# Test:  Q1 2023 – Q4 2023 (held-out future)
+# Fixed temporal split — never changes between experiments
+# Train: Q1 2019 – Q1 2022 (13 quarters of history)
+# Val:   Q2 2022 – Q4 2022 (2 quarters, held-out for early stopping)
+# Test:  Q1 2023 – Q4 2023 (held-out future, primary metric)
 TRAIN_START = "2019-01-01"
-TRAIN_END = "2022-10-01"
-TEST_START = "2023-01-01"
-TEST_END = "2023-10-01"
+TRAIN_END   = "2022-04-01"
+VAL_START   = "2022-04-01"
+VAL_END     = "2022-10-01"
+TEST_START  = "2023-01-01"
+TEST_END    = "2023-10-01"
 
 # Hyperparams from production (fixed — only Rust core changes are tested)
-N_ESTIMATORS = int(os.environ.get("N_ESTIMATORS", "200"))
-FOCAL_GAMMA = float(os.environ.get("FOCAL_GAMMA", "0.0"))
-MAX_DEPTH = int(os.environ.get("MAX_DEPTH", "8"))
-LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "0.05"))
-REG_LAMBDA = float(os.environ.get("REG_LAMBDA", "1.0"))
-SUBSAMPLE = float(os.environ.get("SUBSAMPLE", "0.8"))
-COLSAMPLE = float(os.environ.get("COLSAMPLE", "0.8"))
-GAMMA = float(os.environ.get("GAMMA", "0.1"))
+N_ESTIMATORS         = int(os.environ.get("N_ESTIMATORS", "300"))
+EARLY_STOPPING_ROUNDS = int(os.environ.get("EARLY_STOPPING_ROUNDS", "30"))
+FOCAL_GAMMA          = float(os.environ.get("FOCAL_GAMMA", "0.0"))
+MAX_DEPTH            = int(os.environ.get("MAX_DEPTH", "8"))
+LEARNING_RATE        = float(os.environ.get("LEARNING_RATE", "0.05"))
+REG_LAMBDA           = float(os.environ.get("REG_LAMBDA", "1.0"))
+SUBSAMPLE            = float(os.environ.get("SUBSAMPLE", "0.8"))
+COLSAMPLE            = float(os.environ.get("COLSAMPLE", "0.8"))
+GAMMA                = float(os.environ.get("GAMMA", "0.1"))
 
 
 def load_and_filter(path):
@@ -153,12 +157,17 @@ def run_benchmark():
 
     from datetime import date as _date
     train_start = _date.fromisoformat(TRAIN_START)
-    train_end = _date.fromisoformat(TRAIN_END)
-    test_start = _date.fromisoformat(TEST_START)
-    test_end = _date.fromisoformat(TEST_END)
+    train_end   = _date.fromisoformat(TRAIN_END)
+    val_start   = _date.fromisoformat(VAL_START)
+    val_end     = _date.fromisoformat(VAL_END)
+    test_start  = _date.fromisoformat(TEST_START)
+    test_end    = _date.fromisoformat(TEST_END)
 
     df_train = df.filter(
-        (pl.col("as_of_date") >= train_start) & (pl.col("as_of_date") <= train_end)
+        (pl.col("as_of_date") >= train_start) & (pl.col("as_of_date") < train_end)
+    )
+    df_val = df.filter(
+        (pl.col("as_of_date") >= val_start) & (pl.col("as_of_date") < val_end)
     )
     df_test = df.filter(
         (pl.col("as_of_date") >= test_start) & (pl.col("as_of_date") <= test_end)
@@ -168,13 +177,16 @@ def run_benchmark():
 
     X_train = df_train.select(features).to_numpy().astype(np.float64)
     y_train = df_train[TARGET].to_numpy().astype(np.float64)
-    X_test = df_test.select(features).to_numpy().astype(np.float64)
-    y_test = df_test[TARGET].to_numpy().astype(np.float64)
+    X_val   = df_val.select(features).to_numpy().astype(np.float64)
+    y_val   = df_val[TARGET].to_numpy().astype(np.float64)
+    X_test  = df_test.select(features).to_numpy().astype(np.float64)
+    y_test  = df_test[TARGET].to_numpy().astype(np.float64)
 
     # Median imputation (no target encoding — keeps benchmark fast & pure)
     imputer = SimpleImputer(strategy="median")
     X_train = imputer.fit_transform(X_train)
-    X_test = imputer.transform(X_test)
+    X_val   = imputer.transform(X_val)
+    X_test  = imputer.transform(X_test)
 
     n_pos = int(y_train.sum())
     n_neg = len(y_train) - n_pos
@@ -192,27 +204,35 @@ def run_benchmark():
         reg_lambda=REG_LAMBDA,
         scale_pos_weight=scale_pos_weight,
         focal_gamma=FOCAL_GAMMA,
+        early_stopping_rounds=EARLY_STOPPING_ROUNDS,
     )
 
     t0 = time.time()
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, eval_set=(X_val, y_val))
     train_time = time.time() - t0
 
     proba = model.predict_proba(X_test)[:, 1]
     pr_auc = average_precision_score(y_test, proba)
     roc_auc = roc_auc_score(y_test, proba)
 
+    val_proba = model.predict_proba(X_val)[:, 1]
+    val_pr_auc = average_precision_score(y_val, val_proba)
+
     result = {
         "pr_auc": round(pr_auc, 6),
         "roc_auc": round(roc_auc, 6),
+        "val_pr_auc": round(val_pr_auc, 6),
+        "n_trees": model.n_trees_,
         "train_time_s": round(train_time, 1),
         "n_train": len(y_train),
+        "n_val": len(y_val),
         "n_test": len(y_test),
         "pos_rate_train": round(float(n_pos / len(y_train)), 6),
         "pos_rate_test": round(float(y_test.mean()), 6),
         "n_features": len(features),
         "focal_gamma": FOCAL_GAMMA,
         "n_estimators": N_ESTIMATORS,
+        "early_stopping_rounds": EARLY_STOPPING_ROUNDS,
     }
 
     print(json.dumps(result))

@@ -120,6 +120,7 @@ class PKBoostClassifier(ClassifierMixin, BaseEstimator):
         colsample_bytree: float = 0.8,
         scale_pos_weight: float = 1.0,
         focal_gamma: float = 0.0,
+        early_stopping_rounds: int = 75,
         auto: bool = False,
         random_state: Optional[int] = None,
     ):
@@ -134,6 +135,7 @@ class PKBoostClassifier(ClassifierMixin, BaseEstimator):
         self.colsample_bytree = colsample_bytree
         self.scale_pos_weight = scale_pos_weight
         self.focal_gamma = focal_gamma
+        self.early_stopping_rounds = early_stopping_rounds
         self.auto = auto
         self.random_state = random_state
 
@@ -209,6 +211,7 @@ class PKBoostClassifier(ClassifierMixin, BaseEstimator):
                 colsample_bytree=self.colsample_bytree,
                 scale_pos_weight=self.scale_pos_weight,
                 focal_gamma=self.focal_gamma,
+                early_stopping_rounds=self.early_stopping_rounds,
             )
 
         X = np.ascontiguousarray(X, dtype=np.float64)
