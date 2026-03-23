@@ -10,7 +10,7 @@ pub fn calculate_shannon_entropy(count0: f64, count1: f64) -> f64 {
 
 use std::sync::LazyLock;
 
-const ENTROPY_LUT_SIZE: usize = 10000;
+const ENTROPY_LUT_SIZE: usize = 100000;
 
 static ENTROPY_LOOKUP: LazyLock<Vec<f64>> = LazyLock::new(|| {
     let mut lut = vec![0.0; ENTROPY_LUT_SIZE];
@@ -32,6 +32,15 @@ static ENTROPY_LOOKUP: LazyLock<Vec<f64>> = LazyLock::new(|| {
 pub fn fast_binary_entropy_from_ratio(positive_ratio: f64) -> f64 {
     if positive_ratio <= 0.0 || positive_ratio >= 1.0 {
         return 0.0;
+    }
+    // For extreme ratios (< 0.001 or > 0.999), compute directly to avoid
+    // LUT quantization error. At 3400:1 imbalance, p ~ 0.00029 lands in
+    // bin 2-3 of a 10k LUT but bin 29 of a 100k LUT — still coarse.
+    // Direct computation is exact and fast for these rare cases.
+    if positive_ratio < 0.001 || positive_ratio > 0.999 {
+        let p = positive_ratio;
+        let q = 1.0 - p;
+        return -p * p.log2() - q * q.log2();
     }
     let idx = (positive_ratio * ENTROPY_LUT_SIZE as f64) as usize;
     ENTROPY_LOOKUP[idx.min(ENTROPY_LUT_SIZE - 1)]
