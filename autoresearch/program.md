@@ -45,18 +45,48 @@ insensitive to improvements that matter operationally (top-100 precision).
 - Bins continuous features into i16 using equal-width binning
 - Default: 32 bins per feature
 
-## High-value hypotheses to explore
+## Already tried — do NOT re-propose these
 
-1. **Focal gamma tuning** — focal_gamma=0 (current) vs 0.5, 1.0, 2.0
-2. **Leaf Laplace smoothing** — with 3400:1 imbalance, minority-class leaves
-   are estimated from very few samples; add additive smoothing to leaf values
-3. **Recency weighting** — startup fundraising patterns shift over time (ZIRP/post-ZIRP);
-   down-weight samples from quarters >12 months ago
-4. **Histogram bin allocation** — more bins for log-transformed skewed features;
-   32 bins may be too coarse for funding_amount distributions
-5. **Class-balanced subsampling** — always include all positives in each tree's
-   subsample, fill remainder with negatives (vs current random subsample)
-6. **Asymmetric learning rate** — larger Newton step for rare positive-class nodes
+The following have been benchmarked exhaustively and did not improve PR AUC.
+Proposing variants of these is a waste of time:
+
+- **Focal gamma tuning** — gamma=0.5, 1.0, 2.0 all tried repeatedly. No improvement.
+- **Histogram bin count** — 32→64 and 32→256 both tried. No improvement.
+- **Laplace smoothing on leaf values** — multiple formulations tried. No improvement.
+- **Prediction clamp widening** — [-10,10]→[-15,15] tried. No improvement.
+- **Early stopping changes** — eval frequency, window size tweaks tried. No improvement.
+- **Subsampling ratio variants** — adjusting neg_to_pos ratio tried. No improvement.
+
+## Fresh hypotheses to explore (not yet tried)
+
+Think beyond the obvious. The kept improvements show the model benefits from
+changes that address the fundamental imbalance and gradient dynamics.
+
+1. **Recency weighting** — ZIRP ended in 2022; down-weight samples from pre-2022
+   quarters (e.g. `sample_weight *= 0.95^quarters_ago`). Implement in the gradient
+   calculation by multiplying grad/hess by a time-decay factor.
+
+2. **Asymmetric regularization** — apply weaker `reg_lambda` to positive-class nodes
+   (small hessian sum → over-regularized) and stronger to negative-class nodes.
+   In `tree.rs`: if node is majority-positive, use `reg_lambda * 0.1`.
+
+3. **Gradient clipping** — clip extreme gradients to prevent runaway updates on
+   high-weight positive samples. In `loss.rs`, clamp grad to `[-10*weight, 10*weight]`.
+
+4. **Per-feature bin allocation** — in `histogram_builder.rs`, use more bins (64)
+   for features with high variance (log-transformed funding amounts) and fewer (16)
+   for near-binary features. Use variance of the feature to decide.
+
+5. **Shrinkage on small leaves** — in `tree.rs`, if a leaf covers < N samples,
+   shrink its value toward zero: `value *= n_samples / (n_samples + shrinkage_threshold)`.
+   Different from Laplace — multiplicative, and threshold should be ~50 samples.
+
+6. **Minimum positive count per split** — refuse splits where either child has fewer
+   than K positive samples (e.g. K=2). Adds to `min_child_weight` logic in tree.rs.
+
+7. **Base score warm start** — currently base_score is log(pos_rate/(1-pos_rate)).
+   Try initializing to a slightly more optimistic value (e.g. multiply by 0.9)
+   to reduce early over-confidence on negatives.
 
 ## Experiment protocol
 For each proposed change:

@@ -134,13 +134,35 @@ def propose_change(
 
     history_block = ""
     if history:
-        lines = []
-        for e in history[-8:]:
+        kept = [e for e in history if e.get("kept")]
+        reverted = [e for e in history if not e.get("kept") and e.get("score") is not None]
+        failed = [e for e in history if e.get("score") is None]
+
+        lines = [f"\n\n## Full Experiment History ({len(history)} experiments so far)"]
+
+        if kept:
+            lines.append("\n### Improvements kept (DO NOT revert or re-propose these):")
+            for e in kept:
+                lines.append(f"- [KEPT ✓] exp{e.get('exp_num','?')} PR AUC {e['score']:.5f}  {e['hypothesis']}")
+
+        if reverted:
+            lines.append(f"\n### Tried and did NOT help — DO NOT re-propose variants of these:")
+            for e in reverted:
+                lines.append(f"- [exp{e.get('exp_num','?')}] {e['hypothesis']}  → {e['score']:.5f} ({e.get('delta', 0):+.5f})")
+
+        if failed:
+            lines.append(f"\n### Failed to compile or benchmark ({len(failed)} experiments) — avoid these patterns.")
+
+        lines.append(
+            f"\n### Most recent 5 experiments (for context):"
+        )
+        for e in history[-5:]:
             status = "KEPT ✓" if e.get("kept") else "REVERTED"
             score = e.get("score")
             score_str = f"{score:.5f}" if score is not None else "failed"
             lines.append(f"- [{status}] {e.get('hypothesis', '?')} → PR AUC {score_str}")
-        history_block = "\n\nRecent experiment history:\n" + "\n".join(lines)
+
+        history_block = "\n".join(lines)
 
     prompt = f"""{program}
 
