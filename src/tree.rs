@@ -340,16 +340,8 @@ impl OptimizedTreeShannon {
             // OPTIMIZATION 3: Early gradient-based pruning
             let gradient_norm = g_total.abs();
 
-            // Laplace-style leaf smoothing: shrink leaf values toward zero
-            // proportional to how few samples support them. This is critical
-            // under extreme class imbalance where positive-class leaves may
-            // be estimated from very few samples.
-            // Uses exponential decay: strong smoothing for tiny leaves (n<20),
-            // negligible for large leaves (n>200).
-            let laplace_smooth = 15.0 * (-0.03 * n_samples as f64).exp();
-
             if gradient_norm < params.min_child_weight * 0.01 {
-                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda + laplace_smooth));
+                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
                 self.set_cover(task.node_index, n_samples as f64);
                 continue;
             }
@@ -359,7 +351,7 @@ impl OptimizedTreeShannon {
                 || n_samples < params.min_samples_split
                 || h_total < params.min_child_weight
             {
-                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda + laplace_smooth));
+                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
                 self.set_cover(task.node_index, n_samples as f64);
                 continue;
             }
