@@ -5,16 +5,27 @@ All notable changes to [PKBoost](https://pypi.org/project/pkboost/) are document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.5.0] - 2026-03-23
+
+Autoresearch run: 48 experiments, 9 improvements kept. Total gain on the SVP Series A benchmark (3400:1 class imbalance): **PR AUC 0.222 → 0.251 (+13%)**.
 
 ### Added
 
-- **Autoresearch harness** (`autoresearch/`): Claude-driven experiment loop that proposes targeted Rust changes, compiles, benchmarks, and keeps improvements autonomously. Optimises PR AUC on the SVP Series A model (3400:1 class imbalance).
-- **Focal loss** (`src/loss.rs`): `focal_grad_hess()` helper; `gradient_hessian()` now accepts a `focal_gamma: f64` parameter. At `focal_gamma=0.0` the computation is identical to standard log-loss. Exposed via `focal_gamma` kwarg in Python bindings and sklearn wrapper (`default=0.0`).
+- **Autoresearch harness** (`autoresearch/`): Claude-driven experiment loop that proposes targeted Rust changes, compiles, benchmarks, and keeps improvements. Runs autonomously; each improvement is committed immediately when accepted so future reverts cannot erase it. Supports a `program.md` research brief and logs all experiments to `experiment_log.jsonl`.
+- **Focal loss** (`src/loss.rs`): `focal_grad_hess()` helper; `gradient_hessian()` now accepts a `focal_gamma: f64` parameter. At `focal_gamma=0.0` the computation is identical to standard log-loss (fast path, no branching overhead). Exposed via `focal_gamma` kwarg in Python bindings and sklearn wrapper (`default=0.0`).
+- **`early_stopping_rounds` parameter** (`src/python_bindings.rs`, `sklearn_interface.py`): Exposed in Python API (`default=75`). Benchmark now passes a temporal validation split (Q2–Q4 2022) as `eval_set` so early stopping is active during autoresearch runs.
 
 ### Changed
 
-- **Class-balanced subsampling** (`src/model.rs`): Each boosting iteration now always includes all positive-class samples in its subsample and fills the remaining budget with randomly drawn negatives. Prevents trees from training on zero-positive subsamples under extreme class imbalance. Benchmarked: **+6.6% PR AUC** on the Series A model (0.2221 → 0.2367).
+- **Class-balanced subsampling** (`src/model.rs`): Each boosting iteration now always includes all positive-class samples in its subsample and fills the remaining budget with randomly drawn negatives. Prevents trees from training on zero-positive subsamples under extreme class imbalance. **+6.6% PR AUC** (0.222 → 0.237).
+
+- **Multiplicative leaf shrinkage** (`src/tree.rs`): Leaf values are now shrunk toward zero proportionally to how few samples support them: `value *= n / (n + 50)`. Regularises noisy predictions from small leaves, which are disproportionately common in the rare positive class. **+0.55% PR AUC**.
+
+- **Gradient clipping** (`src/loss.rs`): Per-sample gradients are clamped to `[-10 × weight, +10 × weight]` before accumulation. At 3400:1 imbalance `scale_pos_weight ≈ 3400`, and without clipping a single misclassified positive can dominate entire histogram buckets. **+0.18% PR AUC**.
+
+- **Early stopping EMA smoothing** (`src/model.rs`): The validation-metric sliding window (previously 3 values, simple mean) is replaced with a 5-value exponential moving average (α=0.4). EMA gives more weight to recent evaluations and is more stable under the noisy PR-AUC signal produced by extreme class imbalance. **+0.16% PR AUC**.
+
+- **Entropy LUT resolution** (`src/metrics.rs`): Shannon entropy lookup table enlarged from 10,000 to 100,000 bins. Additionally, ratios outside `[0.001, 0.999]` now bypass the LUT and are computed exactly — at 3400:1 imbalance the positive ratio (~0.00029) previously landed in bins 2–3 of the old table, producing significant quantization error in split-gain calculations. **+0.25% PR AUC**.
 
 ## [2.4.0] - 2026-03-19
 
