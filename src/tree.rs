@@ -351,7 +351,13 @@ impl OptimizedTreeShannon {
                 || n_samples < params.min_samples_split
                 || h_total < params.min_child_weight
             {
-                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+                let raw_value = -g_total / (h_total + params.reg_lambda);
+                // Multiplicative shrinkage for small leaves: value *= n/(n+threshold)
+                // This regularizes noisy predictions from leaves with few samples,
+                // which is critical under extreme class imbalance.
+                let shrinkage_threshold = 50.0;
+                let shrunk_value = raw_value * (n_samples as f64 / (n_samples as f64 + shrinkage_threshold));
+                self.set_leaf(task.node_index, shrunk_value);
                 self.set_cover(task.node_index, n_samples as f64);
                 continue;
             }
