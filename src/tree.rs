@@ -1,17 +1,19 @@
-// Decisions tree implementation with histogram-based splitting
+// Decision tree implementation with histogram-based splitting
 // OPTIMIZED VERSION with ~30-40% speed improvement
 
-use crate::fork_parallel::pfor_range_map;
 use crate::metrics::calculate_shannon_entropy;
 use crate::optimized_data::{CachedHistogram, TransposedData};
+use ndarray::ArrayView1;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HistSplitResult {
     pub best_gain: f64,
-    pub best_bin_idx: u8,
+    pub best_bin_idx: i16,
 }
 
 impl Default for HistSplitResult {
@@ -26,11 +28,11 @@ impl Default for HistSplitResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizedTreeShannon {
     max_depth: usize,
-    // Struct of Arrays (SoA) - chosen for cache locality
+    // Struct of Arrays (SoA) - excellent for cache locality
     node_types: Vec<u8>,
     leaf_values: Vec<f64>,
     split_features: Vec<usize>,
-    split_thresholds: Vec<u8>,
+    split_thresholds: Vec<i16>,
     left_children: Vec<usize>,
     right_children: Vec<usize>,
     pub feature_indices: Vec<usize>,
@@ -65,7 +67,7 @@ impl OptimizedTreeShannon {
         &mut self,
         node_idx: usize,
         feature: usize,
-        threshold: u8,
+        threshold: i16,
         left_child: usize,
         right_child: usize,
     ) {
@@ -77,7 +79,7 @@ impl OptimizedTreeShannon {
     }
 
     #[inline(always)]
-    pub fn predict_single(&self, x_binned_row: &[u8]) -> f64 {
+    pub fn predict_single(&self, x_binned_row: &[i16]) -> f64 {
         let mut current_node_index = 0;
 
         loop {
@@ -103,10 +105,9 @@ impl OptimizedTreeShannon {
     pub fn predict_from_transposed(
         &self,
         transposed_data: &TransposedData,
-        sample_idx: u32,
+        sample_idx: usize,
     ) -> f64 {
         let mut current_node_index = 0;
-        let s_idx = sample_idx as usize;
 
         loop {
             match self.node_types[current_node_index] {
@@ -115,9 +116,13 @@ impl OptimizedTreeShannon {
                     let feature = self.split_features[current_node_index];
                     let threshold = self.split_thresholds[current_node_index];
 
-                    // Use optimized sliceless access if possible
-                    let feature_values = transposed_data.get_feature_values(feature);
-                    let feature_value = unsafe { *feature_values.get_unchecked(s_idx) };
+                    let feature_value = if feature < transposed_data.n_features
+                        && sample_idx < transposed_data.n_samples
+                    {
+                        transposed_data.features[[feature, sample_idx]]
+                    } else {
+                        0
+                    };
 
                     current_node_index = if feature_value <= threshold {
                         self.left_children[current_node_index]
@@ -130,36 +135,23 @@ impl OptimizedTreeShannon {
         }
     }
 
-    // Batch prediction — ForkUnion parallel for large sets, sequential for small
+    // OPTIMIZATION: Batch prediction with SIMD-friendly memory access
     pub fn predict_batch(
         &self,
         transposed_data: &TransposedData,
-        sample_indices: &[u32],
+        sample_indices: &[usize],
     ) -> Vec<f64> {
-        if sample_indices.len() >= 50_000 {
-            pfor_range_map(0..sample_indices.len(), |i| {
-                self.predict_from_transposed(transposed_data, sample_indices[i])
-            })
+        // Use parallelism for medium to large batches
+        if sample_indices.len() >= 500 {
+            sample_indices
+                .par_iter()
+                .map(|&sample_idx| self.predict_from_transposed(transposed_data, sample_idx))
+                .collect()
         } else {
             sample_indices
                 .iter()
                 .map(|&sample_idx| self.predict_from_transposed(transposed_data, sample_idx))
                 .collect()
-        }
-    }
-
-    /// OPTIMIZED: Predict into pre-allocated buffer (zero-allocation)
-    #[inline]
-    pub fn predict_batch_into(
-        &self,
-        transposed_data: &TransposedData,
-        sample_indices: &[u32],
-        output: &mut [f64],
-    ) {
-        debug_assert_eq!(sample_indices.len(), output.len());
-
-        for (out, &sample_idx) in output.iter_mut().zip(sample_indices.iter()) {
-            *out = self.predict_from_transposed(transposed_data, sample_idx);
         }
     }
 
@@ -288,13 +280,11 @@ impl OptimizedTreeShannon {
         &mut self,
         transposed_data: &TransposedData,
         y: &[f64],
-        grad: &[f32],
-        hess: &[f32],
-        sample_indices: &[u32],
+        grad: &[f64],
+        hess: &[f64],
+        sample_indices: &[usize],
         feature_indices: &[usize],
         params: &TreeParams,
-        mut full_preds: Option<&mut Vec<f64>>,
-        learning_rate: f64,
     ) {
         if transposed_data.n_samples == 0 || sample_indices.is_empty() {
             return;
@@ -310,39 +300,28 @@ impl OptimizedTreeShannon {
             return;
         }
 
-        // OPTIMIZATION: Pre-compute compact y labels (u8 instead of f64)
-        // Reduces memory bandwidth by ~28% in histogram building hot loop
-        let y_u8: Vec<u8> = y.iter().map(|&v| if v > 0.5 { 1u8 } else { 0u8 }).collect();
+        let y_view = ArrayView1::from(y);
+        let grad_view = ArrayView1::from(grad);
+        let hess_view = ArrayView1::from(hess);
 
         let max_nodes = 2_usize.pow(self.max_depth as u32 + 1);
-        let n_features = self.feature_indices.len();
-        let mut workspace = TreeBuildingWorkspace::new(sample_indices.len(), n_features);
+        let mut workspace = TreeBuildingWorkspace::new(sample_indices.len());
 
-        // OPTIMIZATION 1: Build root histogram once (into root_hists)
-        let mut root_hists: Vec<CachedHistogram> = (0..n_features)
-            .map(|_i| CachedHistogram::default())
-            .collect();
-
-        build_hists_into(
+        // OPTIMIZATION 1: Build root histogram once
+        let root_hists = build_hists_optimized(
             &self.feature_indices,
             transposed_data,
-            &y_u8,
-            grad,
-            hess,
+            &y_view,
+            &grad_view,
+            &hess_view,
             sample_indices,
             params,
-            &mut root_hists,
-            &mut workspace.active_data,
         );
-
-        // Initial indices in workspace
-        workspace.indices[..sample_indices.len()].copy_from_slice(sample_indices);
 
         let mut queue: VecDeque<SplitTask> = VecDeque::with_capacity(max_nodes / 2);
         queue.push_back(SplitTask {
             node_index: 0,
-            sample_start: 0,
-            sample_len: sample_indices.len(),
+            sample_indices: Arc::new(sample_indices.to_vec()),
             histogram: root_hists,
             depth: 0,
         });
@@ -350,153 +329,108 @@ impl OptimizedTreeShannon {
         let mut next_node_in_vec = 1;
 
         while let Some(task) = queue.pop_front() {
-            let n_samples = task.sample_len;
+            let n_samples = task.sample_indices.len();
 
-            // OPTIMIZATION 2: Extract totals once (ZERO-COST using pre-computed sums)
-            let g_total = task.histogram[0].sums.grad;
-            let h_total = task.histogram[0].sums.hess;
+            // OPTIMIZATION 2: Extract totals once
+            let (g_total, h_total): (f64, f64) = {
+                let (g_slice, h_slice, _, _) = task.histogram[0].as_slices();
+                (g_slice.iter().sum(), h_slice.iter().sum())
+            };
 
             // OPTIMIZATION 3: Early gradient-based pruning
-            let gradient_norm = g_total.abs() as f64;
+            let gradient_norm = g_total.abs();
             if gradient_norm < params.min_child_weight * 0.01 {
-                let leaf_val = (-g_total as f64) / (h_total as f64 + params.reg_lambda);
-                self.set_leaf(task.node_index, leaf_val);
+                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
                 self.set_cover(task.node_index, n_samples as f64);
-                if let Some(ref mut fp) = full_preds {
-                    for &idx in &workspace.indices[task.sample_start..task.sample_start + n_samples]
-                    {
-                        fp[idx as usize] =
-                            (fp[idx as usize] + learning_rate * leaf_val).clamp(-10.0, 10.0);
-                    }
-                }
-                workspace.release_hists(task.histogram);
                 continue;
             }
 
             // Stopping conditions
             if task.depth >= self.max_depth
                 || n_samples < params.min_samples_split
-                || (h_total as f64) < params.min_child_weight
+                || h_total < params.min_child_weight
             {
-                let leaf_val = (-g_total as f64) / (h_total as f64 + params.reg_lambda);
-                self.set_leaf(task.node_index, leaf_val);
+                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
                 self.set_cover(task.node_index, n_samples as f64);
-                if let Some(ref mut fp) = full_preds {
-                    for &idx in &workspace.indices[task.sample_start..task.sample_start + n_samples]
-                    {
-                        fp[idx as usize] =
-                            (fp[idx as usize] + learning_rate * leaf_val).clamp(-10.0, 10.0);
-                    }
-                }
-                workspace.release_hists(task.histogram);
                 continue;
             }
 
-            // OPTIMIZATION 4: Seq split finding for 29 features
-            let best_split = find_best_split_across_features_parallel(
+            // OPTIMIZATION 4: Fast parallel split finding
+            let best_split = find_best_split_across_features_optimized(
                 &task.histogram,
                 params,
                 task.depth as i32,
             );
 
-            if best_split.is_none() || best_split.as_ref().unwrap().1.best_gain <= 1e-6 {
-                let leaf_val = (-g_total as f64) / (h_total as f64 + params.reg_lambda);
-                self.set_leaf(task.node_index, leaf_val);
+            if best_split.is_none() || best_split.unwrap().1.best_gain <= 1e-6 {
+                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
                 self.set_cover(task.node_index, n_samples as f64);
-                if let Some(ref mut fp) = full_preds {
-                    for &idx in &workspace.indices[task.sample_start..task.sample_start + n_samples]
-                    {
-                        fp[idx as usize] =
-                            (fp[idx as usize] + learning_rate * leaf_val).clamp(-10.0, 10.0);
-                    }
-                }
-                workspace.release_hists(task.histogram);
                 continue;
             }
 
             let (best_feature_local_idx, split_info) = best_split.unwrap();
             let best_feature_global_idx = self.feature_indices[best_feature_local_idx];
 
-            // OPTIMIZATION 5: In-place partitioning
-            let mut left_count = 0;
-            let mut right_count = 0;
-            let feature_values = transposed_data.get_feature_values(best_feature_global_idx);
-            let threshold = split_info.best_bin_idx;
-
-            for &idx in &workspace.indices[task.sample_start..task.sample_start + n_samples] {
-                if unsafe { *feature_values.get_unchecked(idx as usize) } <= threshold {
-                    workspace.buffer_b[task.sample_start + left_count] = idx;
-                    left_count += 1;
-                } else {
-                    workspace.buffer_b[task.sample_start + n_samples - 1 - right_count] = idx;
-                    right_count += 1;
-                }
-            }
-
-            // Copy back to workspace.indices
-            workspace.indices[task.sample_start..task.sample_start + n_samples].copy_from_slice(
-                &workspace.buffer_b[task.sample_start..task.sample_start + n_samples],
+            // OPTIMIZATION 5: Fast partitioning with pre-allocated buffers
+            partition_into_optimized(
+                &task.sample_indices,
+                best_feature_global_idx,
+                split_info.best_bin_idx,
+                transposed_data,
+                &mut workspace.left_indices,
+                &mut workspace.right_indices,
             );
 
-            if left_count == 0 || right_count == 0 {
-                let leaf_val = (-g_total as f64) / (h_total as f64 + params.reg_lambda);
-                self.set_leaf(task.node_index, leaf_val);
+            if workspace.left_indices.is_empty() || workspace.right_indices.is_empty() {
+                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
                 self.set_cover(task.node_index, n_samples as f64);
-                if let Some(ref mut fp) = full_preds {
-                    for &idx in &workspace.indices[task.sample_start..task.sample_start + n_samples]
-                    {
-                        fp[idx as usize] =
-                            (fp[idx as usize] + learning_rate * leaf_val).clamp(-10.0, 10.0);
-                    }
-                }
-                workspace.release_hists(task.histogram);
                 continue;
             }
 
-            // OPTIMIZATION 6: Histogram subtraction
-            let (smaller_start, smaller_len, _, _) = if left_count < right_count {
-                (
-                    task.sample_start,
-                    left_count,
-                    task.sample_start + left_count,
-                    right_count,
-                )
-            } else {
-                (
-                    task.sample_start + left_count,
-                    right_count,
-                    task.sample_start,
-                    left_count,
-                )
-            };
-
-            let mut smaller_hists = workspace.acquire_hists(n_features);
-            let mut larger_hists = workspace.acquire_hists(n_features);
-
-            build_hists_into(
-                &self.feature_indices,
-                transposed_data,
-                &y_u8,
-                grad,
-                hess,
-                &workspace.indices[smaller_start..smaller_start + smaller_len],
-                params,
-                &mut smaller_hists,
-                &mut workspace.active_data,
-            );
-
-            // Subtract: parent - smaller = larger
-            for fi in 0..n_features {
-                task.histogram[fi].subtract_into(&smaller_hists[fi], &mut larger_hists[fi]);
-            }
+            // OPTIMIZATION 6: Histogram subtraction (only build smaller child)
+            let (left_hists, right_hists) =
+                if workspace.left_indices.len() < workspace.right_indices.len() {
+                    let smaller_hists = build_hists_optimized(
+                        &self.feature_indices,
+                        transposed_data,
+                        &y_view,
+                        &grad_view,
+                        &hess_view,
+                        &workspace.left_indices,
+                        params,
+                    );
+                    // OPTIMIZATION 6: Histogram subtraction with Rayon
+                    let larger_hists: Vec<CachedHistogram> = task
+                        .histogram
+                        .par_iter()
+                        .zip(&smaller_hists)
+                        .map(|(parent, sibling)| parent.subtract(sibling))
+                        .collect();
+                    (smaller_hists, larger_hists)
+                } else {
+                    let smaller_hists = build_hists_optimized(
+                        &self.feature_indices,
+                        transposed_data,
+                        &y_view,
+                        &grad_view,
+                        &hess_view,
+                        &workspace.right_indices,
+                        params,
+                    );
+                    // OPTIMIZATION 6: Histogram subtraction with Rayon
+                    let larger_hists: Vec<CachedHistogram> = task
+                        .histogram
+                        .par_iter()
+                        .zip(&smaller_hists)
+                        .map(|(parent, sibling)| parent.subtract(sibling))
+                        .collect();
+                    (larger_hists, smaller_hists)
+                };
 
             let left_child_index = next_node_in_vec;
             let right_child_index = next_node_in_vec + 1;
 
             if right_child_index >= self.node_types.len() {
-                workspace.release_hists(smaller_hists);
-                workspace.release_hists(larger_hists);
-                workspace.release_hists(task.histogram);
                 continue;
             }
 
@@ -510,28 +444,20 @@ impl OptimizedTreeShannon {
             self.set_cover(task.node_index, n_samples as f64);
             next_node_in_vec += 2;
 
-            let (left_hists, right_hists) = if left_count < right_count {
-                (smaller_hists, larger_hists)
-            } else {
-                (larger_hists, smaller_hists)
-            };
-
             queue.push_back(SplitTask {
                 node_index: left_child_index,
-                sample_start: task.sample_start,
-                sample_len: left_count,
+                // Use take() instead of clone() - moves ownership, no allocation
+                sample_indices: Arc::new(std::mem::take(&mut workspace.left_indices)),
                 histogram: left_hists,
                 depth: task.depth + 1,
             });
             queue.push_back(SplitTask {
                 node_index: right_child_index,
-                sample_start: task.sample_start + left_count,
-                sample_len: right_count,
+                // Use take() instead of clone() - moves ownership, no allocation
+                sample_indices: Arc::new(std::mem::take(&mut workspace.right_indices)),
                 histogram: right_hists,
                 depth: task.depth + 1,
             });
-
-            workspace.release_hists(task.histogram);
         }
     }
 }
@@ -563,8 +489,7 @@ impl Default for TreeParams {
 
 struct SplitTask {
     node_index: usize,
-    sample_start: usize,
-    sample_len: usize,
+    sample_indices: Arc<Vec<usize>>,
     histogram: Vec<CachedHistogram>,
     depth: usize,
 }
@@ -575,121 +500,48 @@ thread_local! {
 }
 
 struct IndexPool {
-    buffers: Vec<Vec<u32>>,
-    active_buffers: Vec<crate::optimized_data::ActiveData>,
-    bin_buffers: Vec<Vec<u8>>,
-    histogram_buffers: Vec<Vec<CachedHistogram>>,
+    buffers: Vec<Vec<usize>>,
 }
 
 impl IndexPool {
     fn new() -> Self {
         Self {
             buffers: Vec::with_capacity(8),
-            active_buffers: Vec::with_capacity(4),
-            bin_buffers: Vec::with_capacity(4),
-            histogram_buffers: Vec::with_capacity(16),
         }
     }
 
-    fn acquire(&mut self, size: usize) -> Vec<u32> {
+    fn acquire(&mut self, capacity: usize) -> Vec<usize> {
         self.buffers
-            .pop()
-            .map(|mut buf| {
-                buf.resize(size, 0);
-                buf
-            })
-            .unwrap_or_else(|| vec![0u32; size])
-    }
-
-    fn release(&mut self, buf: Vec<u32>) {
-        if buf.capacity() <= 1024 * 1024 && self.buffers.len() < 16 {
-            self.buffers.push(buf);
-        }
-    }
-
-    fn acquire_active(&mut self, capacity: usize) -> crate::optimized_data::ActiveData {
-        self.active_buffers
-            .pop()
-            .map(|mut buf| {
-                buf.resize(capacity);
-                buf
-            })
-            .unwrap_or_else(|| crate::optimized_data::ActiveData::new(capacity))
-    }
-
-    fn release_active(&mut self, buf: crate::optimized_data::ActiveData) {
-        if buf.samples.capacity() <= 512 * 1024 && self.active_buffers.len() < 8 {
-            self.active_buffers.push(buf);
-        }
-    }
-
-    fn acquire_bins(&mut self, capacity: usize) -> Vec<u8> {
-        self.bin_buffers
             .pop()
             .map(|mut buf| {
                 buf.clear();
                 buf.reserve(capacity.saturating_sub(buf.capacity()));
-                buf.resize(capacity, 0);
                 buf
             })
-            .unwrap_or_else(|| vec![0u8; capacity])
+            .unwrap_or_else(|| Vec::with_capacity(capacity))
     }
 
-    fn release_bins(&mut self, buf: Vec<u8>) {
-        if buf.capacity() <= 2 * 1024 * 1024 && self.bin_buffers.len() < 8 {
-            self.bin_buffers.push(buf);
-        }
-    }
-
-    fn acquire_hists(&mut self, n_features: usize) -> Vec<CachedHistogram> {
-        self.histogram_buffers
-            .pop()
-            .map(|mut h| {
-                if h.len() != n_features {
-                    h.resize(n_features, CachedHistogram::default());
-                }
-                h
-            })
-            .unwrap_or_else(|| {
-                (0..n_features)
-                    .map(|_| CachedHistogram::default())
-                    .collect()
-            })
-    }
-
-    fn release_hists(&mut self, hists: Vec<CachedHistogram>) {
-        if self.histogram_buffers.len() < 32 {
-            self.histogram_buffers.push(hists);
+    fn release(&mut self, buf: Vec<usize>) {
+        if buf.capacity() <= 8192 && self.buffers.len() < 16 {
+            self.buffers.push(buf);
         }
     }
 }
 
 struct TreeBuildingWorkspace {
-    indices: Vec<u32>,
-    buffer_b: Vec<u32>,
-    active_data: crate::optimized_data::ActiveData,
-    bin_buffer: Vec<u8>,
+    left_indices: Vec<usize>,
+    right_indices: Vec<usize>,
 }
 
 impl TreeBuildingWorkspace {
-    fn new(n_samples: usize, _n_features: usize) -> Self {
+    fn new(n_samples: usize) -> Self {
         INDEX_POOL.with(|pool| {
             let mut pool = pool.borrow_mut();
             Self {
-                indices: pool.acquire(n_samples),
-                buffer_b: pool.acquire(n_samples),
-                active_data: pool.acquire_active(n_samples + 1024),
-                bin_buffer: pool.acquire_bins(n_samples * 4 + 1024),
+                left_indices: pool.acquire(n_samples / 2),
+                right_indices: pool.acquire(n_samples / 2),
             }
         })
-    }
-
-    fn acquire_hists(&mut self, n_features: usize) -> Vec<CachedHistogram> {
-        INDEX_POOL.with(|pool| pool.borrow_mut().acquire_hists(n_features))
-    }
-
-    fn release_hists(&mut self, hists: Vec<CachedHistogram>) {
-        INDEX_POOL.with(|pool| pool.borrow_mut().release_hists(hists))
     }
 }
 
@@ -697,149 +549,139 @@ impl Drop for TreeBuildingWorkspace {
     fn drop(&mut self) {
         INDEX_POOL.with(|pool| {
             let mut pool = pool.borrow_mut();
-            pool.release(std::mem::take(&mut self.indices));
-            pool.release(std::mem::take(&mut self.buffer_b));
-            pool.release_active(std::mem::take(&mut self.active_data));
-            pool.release_bins(std::mem::take(&mut self.bin_buffer));
+            let left = std::mem::take(&mut self.left_indices);
+            let right = std::mem::take(&mut self.right_indices);
+            pool.release(left);
+            pool.release(right);
         });
     }
 }
 
-// OPTIMIZATION: ForkUnion parallel per-feature histogram building (ZERO-ALLOCATION)
-// Uses ForkUnion's low-overhead for_n instead of Rayon's high-overhead par_iter_mut.
-// No mutexes, no CAS, no heap allocations on the dispatch path.
-fn build_hists_into(
+// OPTIMIZATION 8: Branchless partitioning
+#[inline(always)]
+fn partition_into_optimized(
+    indices: &[usize],
+    feature_idx: usize,
+    threshold: i16,
+    transposed_data: &TransposedData,
+    left_out: &mut Vec<usize>,
+    right_out: &mut Vec<usize>,
+) {
+    left_out.clear();
+    right_out.clear();
+
+    let feature_values = transposed_data.get_feature_values(feature_idx);
+
+    // Pre-allocate exact capacity
+    let estimated_left = indices.len() / 2;
+    left_out.reserve(estimated_left);
+    right_out.reserve(estimated_left);
+
+    // Branchless partitioning (compiler can vectorize better)
+    for &i in indices {
+        let goes_left = feature_values[i] <= threshold;
+        if goes_left {
+            left_out.push(i);
+        } else {
+            right_out.push(i);
+        }
+    }
+}
+
+// OPTIMIZATION 9: Adaptive parallelism based on workload
+fn build_hists_optimized(
     feature_indices: &[usize],
     transposed_data: &TransposedData,
-    y_u8: &[u8],
-    grad: &[f32],
-    hess: &[f32],
-    indices: &[u32],
+    y: &ArrayView1<f64>,
+    grad: &ArrayView1<f64>,
+    hess: &ArrayView1<f64>,
+    indices: &[usize],
     params: &TreeParams,
-    out: &mut [CachedHistogram],
-    workspace_active: &mut crate::optimized_data::ActiveData,
-) {
-    debug_assert!(out.len() >= feature_indices.len());
-    let n_features = feature_indices.len();
-    let n_samples = indices.len();
+) -> Vec<CachedHistogram> {
+    // Parallel threshold: balance overhead vs speedup
+    let use_parallel = feature_indices.len() >= 4 && indices.len() >= 10000;
 
-    // Reorganize data into contiguous buffer (AoS)
-    crate::optimized_data::gather_active_data(indices, grad, hess, y_u8, workspace_active);
-
-    if n_samples >= 25_000 {
-        use crate::fork_parallel::pfor_indexed;
-        let n_chunks = (n_features + 3) / 4;
-        let out_ptr = out.as_mut_ptr() as usize;
-        let active_ref = &*workspace_active;
-
-        pfor_indexed(n_chunks, move |chunk_idx| {
-            let start = chunk_idx * 4;
-            let end = (start + 4).min(n_features);
-            let out_ptr = out_ptr as *mut CachedHistogram;
-
-            if end - start == 4 {
-                let mut f_indices = [0usize; 4];
-                let mut n_bins = [0usize; 4];
-                for i in 0..4 {
-                    f_indices[i] = feature_indices[start + i];
-                    n_bins[i] = params.n_bins_per_feature[start + i];
-                }
-                INDEX_POOL.with(|pool| {
-                    let mut pool = pool.borrow_mut();
-                    let mut bin_buf = pool.acquire_bins(n_samples * 4);
-                    transposed_data.gather_bins_4x(&f_indices, indices, &n_bins, &mut bin_buf);
-                    let hists = unsafe { std::slice::from_raw_parts_mut(out_ptr.add(start), 4) };
-                    transposed_data.build_multi_histogram_4x(active_ref, &n_bins, &bin_buf, hists);
-                    pool.release_bins(bin_buf);
-                });
-            } else {
-                for i in start..end {
-                    let hist = unsafe { &mut *out_ptr.add(i) };
-                    transposed_data.build_histogram_into_f32(
-                        feature_indices[i],
-                        indices,
-                        active_ref,
-                        params.n_bins_per_feature[i],
-                        hist,
-                    );
-                }
-            }
-        });
+    if use_parallel {
+        // Use Rayon parallel iterator for histogram building
+        feature_indices
+            .par_iter()
+            .enumerate()
+            .map(|(feat_idx_local, &actual_feat_idx)| {
+                CachedHistogram::build_vectorized(
+                    transposed_data,
+                    y,
+                    grad,
+                    hess,
+                    indices,
+                    actual_feat_idx,
+                    params.n_bins_per_feature[feat_idx_local],
+                )
+            })
+            .collect()
     } else {
-        // Sequential path
-        let mut f_idx = 0;
-        while f_idx + 4 <= n_features {
-            let mut f_indices = [0usize; 4];
-            let mut n_bins = [0usize; 4];
-            for i in 0..4 {
-                f_indices[i] = feature_indices[f_idx + i];
-                n_bins[i] = params.n_bins_per_feature[f_idx + i];
-            }
-            INDEX_POOL.with(|pool| {
-                let mut pool = pool.borrow_mut();
-                let mut bin_buf = pool.acquire_bins(n_samples * 4);
-                transposed_data.gather_bins_4x(&f_indices, indices, &n_bins, &mut bin_buf);
-                transposed_data.build_multi_histogram_4x(
-                    workspace_active,
-                    &n_bins,
-                    &bin_buf,
-                    &mut out[f_idx..f_idx + 4],
-                );
-                pool.release_bins(bin_buf);
-            });
-            f_idx += 4;
-        }
-        while f_idx < n_features {
-            transposed_data.build_histogram_into_f32(
-                feature_indices[f_idx],
-                indices,
-                workspace_active,
-                params.n_bins_per_feature[f_idx],
-                &mut out[f_idx],
-            );
-            f_idx += 1;
-        }
+        feature_indices
+            .iter()
+            .enumerate()
+            .map(|(feat_idx_local, &actual_feat_idx)| {
+                CachedHistogram::build_vectorized(
+                    transposed_data,
+                    y,
+                    grad,
+                    hess,
+                    indices,
+                    actual_feat_idx,
+                    params.n_bins_per_feature[feat_idx_local],
+                )
+            })
+            .collect()
     }
 }
 
-// OPTIMIZATION: Parallel split finding (scans all feature histograms in parallel)
-fn find_best_split_across_features_parallel(
+// OPTIMIZATION 10: Fast feature elimination with early exit
+fn find_best_split_across_features_optimized(
     hists: &[CachedHistogram],
     params: &TreeParams,
     depth: i32,
 ) -> Option<(usize, HistSplitResult)> {
-    let n = hists.len();
-    if n == 0 {
-        return None;
+    // Sequential scan for small feature sets (avoids parallelism overhead)
+    if hists.len() <= 4 {
+        return hists
+            .iter()
+            .enumerate()
+            .filter(|(_, hist)| {
+                let (_, hess, _, count) = hist.as_slices();
+                let total_hess: f64 = hess.iter().sum();
+                let non_zero_bins = count.iter().filter(|&&c| c > 0.0).count();
+                total_hess > params.min_child_weight * params.feature_elimination_threshold
+                    && non_zero_bins > 1
+            })
+            .map(|(feat_idx_local, hist)| {
+                (
+                    feat_idx_local,
+                    find_best_split_cached_optimized(hist, params, depth),
+                )
+            })
+            .max_by(|a, b| a.1.best_gain.partial_cmp(&b.1.best_gain).unwrap());
     }
 
-    // For small feature sets (like the 29 in fraud dataset), sequential is faster
-    // due to thread dispatch overhead being higher than the gain calculation.
-    let mut best_feature_local_idx = 0;
-    let mut best_result = HistSplitResult::default();
-    let mut found = false;
-
-    for (feat_idx_local, hist) in hists.iter().enumerate() {
-        let total_hess = hist.sums.hess;
-        let non_zero_bins = hist.bins.iter().filter(|b| b.count > 0.0).count();
-
-        if (total_hess as f64) > params.min_child_weight * params.feature_elimination_threshold
-            && non_zero_bins > 1
-        {
-            let res = find_best_split_cached_optimized(hist, params, depth);
-            if res.best_gain > best_result.best_gain {
-                best_result = res;
-                best_feature_local_idx = feat_idx_local;
-                found = true;
-            }
-        }
-    }
-
-    if found && best_result.best_gain > 1e-6 {
-        Some((best_feature_local_idx, best_result))
-    } else {
-        None
-    }
+    // Parallel for larger feature sets
+    hists
+        .par_iter()
+        .enumerate()
+        .filter(|(_, hist)| {
+            let (_, hess, _, count) = hist.as_slices();
+            let total_hess: f64 = hess.iter().sum();
+            let non_zero_bins = count.iter().filter(|&&c| c > 0.0).count();
+            total_hess > params.min_child_weight * params.feature_elimination_threshold
+                && non_zero_bins > 1
+        })
+        .map(|(feat_idx_local, hist)| {
+            (
+                feat_idx_local,
+                find_best_split_cached_optimized(hist, params, depth),
+            )
+        })
+        .reduce_with(|a, b| if a.1.best_gain > b.1.best_gain { a } else { b })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -854,10 +696,12 @@ struct PrecomputedSums {
 impl PrecomputedSums {
     #[inline]
     fn from_histogram(hist: &CachedHistogram) -> Self {
-        let g_total = hist.sums.grad as f64;
-        let h_total = hist.sums.hess as f64;
-        let y_total = hist.sums.y as f64;
-        let n_total = hist.sums.count as f64;
+        let (grad, hess, y, count) = hist.as_slices();
+
+        let g_total: f64 = grad.iter().sum();
+        let h_total: f64 = hess.iter().sum();
+        let y_total: f64 = y.iter().sum();
+        let n_total: f64 = count.iter().sum();
 
         let parent_entropy = calculate_shannon_entropy(n_total - y_total, y_total);
 
@@ -879,11 +723,16 @@ fn find_best_split_cached_optimized(
     depth: i32,
 ) -> HistSplitResult {
     let precomputed = PrecomputedSums::from_histogram(hist);
+    let (grad, hess, y, count) = hist.as_slices();
 
     if precomputed.n_total < params.min_samples_split as f64 {
         return HistSplitResult::default();
     }
 
+    // ADAPTIVE SHANNON MODE:
+    // Only pay the cost of Information Gain calculation when the node has "high" entropy.
+    // For imbalanced data (p=0.2%), entropy is ~0.02, so we set threshold to 0.01 to capture it.
+    // Deep nodes often become pure (entropy -> 0), naturally disabling this path for speed.
     let use_entropy = precomputed.parent_entropy > 0.01;
     let adaptive_weight = if use_entropy {
         params.mi_weight * (-0.15 * depth as f64).exp()
@@ -904,15 +753,16 @@ fn find_best_split_cached_optimized(
     let mut y_left = 0.0;
     let mut n_left = 0.0;
 
-    let bins = &hist.bins;
-    let n_splits = bins.len().saturating_sub(1);
+    let n_splits = grad.len().saturating_sub(1);
 
+    // OPTIMIZATION: Remove bounds checks from tight loop
     for i in 0..n_splits {
-        let b = unsafe { bins.get_unchecked(i) };
-        gl += b.grad as f64;
-        hl += b.hess as f64;
-        y_left += b.y as f64;
-        n_left += b.count as f64;
+        unsafe {
+            gl += *grad.get_unchecked(i);
+            hl += *hess.get_unchecked(i);
+            y_left += *y.get_unchecked(i);
+            n_left += *count.get_unchecked(i);
+        }
 
         // Early continue (branch prediction friendly)
         if n_left < 1.0 || hl < min_child_weight {
@@ -927,7 +777,7 @@ fn find_best_split_cached_optimized(
             continue;
         }
 
-        // Optimized gain calculation
+        // Optimized gain calculation (removed redundant multiplications)
         let left_score = gl * gl / (hl + reg_lambda);
         let right_score = gr * gr / (hr + reg_lambda);
         let newton_gain = 0.5 * (left_score + right_score - parent_score) - gamma;
@@ -947,9 +797,10 @@ fn find_best_split_cached_optimized(
             newton_gain
         };
 
+        // Branchless update
         if combined_gain > best_split.best_gain {
             best_split.best_gain = combined_gain;
-            best_split.best_bin_idx = i as u8;
+            best_split.best_bin_idx = i as i16;
         }
     }
 
@@ -981,10 +832,10 @@ mod tests {
         tree.set_leaf(1, 0.1);
         tree.set_leaf(2, 0.9);
 
-        let sample_left = vec![2u8];
+        let sample_left = vec![2i16];
         assert_eq!(tree.predict_single(&sample_left), 0.1);
 
-        let sample_right = vec![5u8];
+        let sample_right = vec![5i16];
         assert_eq!(tree.predict_single(&sample_right), 0.9);
     }
 }

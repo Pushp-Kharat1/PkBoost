@@ -1,4 +1,5 @@
 use ndarray::{Array2, ArrayView2, Axis};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,17 +42,13 @@ impl OptimizedHistogramBuilder {
 
             //  Use Floyd-Rivest (faster than quickselect for small k)
             let mid = sample.len() / 2;
-            sample.select_nth_unstable_by(mid, |a, b| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            sample.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
             return sample[mid];
         }
 
         // Exact median for small arrays
         let mid = feature_values.len() / 2;
-        feature_values.select_nth_unstable_by(mid, |a, b| {
-            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        feature_values.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
         feature_values[mid]
     }
 
@@ -62,33 +59,36 @@ impl OptimizedHistogramBuilder {
         }
         let n_features = x.ncols();
 
-        // Use ForkUnion's pfor_range_map for parallel feature binning
-        let results = crate::fork_parallel::pfor_range_map(0..n_features, |feature_idx| {
-            // Get column view and extract valid (non-NaN) values
-            let column = x.column(feature_idx);
-            let mut valid_values: Vec<f64> = column
-                .iter()
-                .filter(|&&val| !val.is_nan())
-                .cloned()
-                .collect();
+        // Use Rayon's into_par_iter for parallel feature binning
+        let results: Vec<(Vec<f64>, usize, f64)> = (0..n_features)
+            .into_par_iter()
+            .map(|feature_idx| {
+                // Get column view and extract valid (non-NaN) values
+                let column = x.column(feature_idx);
+                let mut valid_values: Vec<f64> = column
+                    .iter()
+                    .filter(|&&val| !val.is_nan())
+                    .cloned()
+                    .collect();
 
-            if valid_values.is_empty() {
-                return (vec![0.0], 1, 0.0);
-            }
+                if valid_values.is_empty() {
+                    return (vec![0.0], 1, 0.0);
+                }
 
-            let median = Self::calculate_median(&mut valid_values);
+                let median = Self::calculate_median(&mut valid_values);
 
-            valid_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            valid_values.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+                valid_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                valid_values.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
 
-            let edges = if valid_values.len() <= self.max_bins {
-                valid_values
-            } else {
-                Self::create_adaptive_bins_static(&valid_values, self.max_bins)
-            };
+                let edges = if valid_values.len() <= self.max_bins {
+                    valid_values
+                } else {
+                    Self::create_adaptive_bins_static(&valid_values, self.max_bins)
+                };
 
-            (edges.clone(), edges.len(), median)
-        });
+                (edges.clone(), edges.len(), median)
+            })
+            .collect();
 
         for (edges, n_bins, median) in results {
             self.bin_edges.push(edges);
@@ -140,6 +140,11 @@ impl OptimizedHistogramBuilder {
         }
     }
 
+    #[inline]
+    fn create_adaptive_bins(&self, sorted_values: &[f64]) -> Vec<f64> {
+        Self::create_adaptive_bins_static(sorted_values, self.max_bins)
+    }
+
     /// Static version for use in closures that can't capture self
     #[inline]
     fn create_adaptive_bins_static(sorted_values: &[f64], max_bins: usize) -> Vec<f64> {
@@ -168,9 +173,9 @@ impl OptimizedHistogramBuilder {
         bins
     }
 
-    /// Transform input data to binned representation (ArrayView2 -> Array2<u8>)
+    /// Transform input data to binned representation (ArrayView2 -> Array2<i16>)
     /// This is zero-copy on input, returns owned binned data
-    pub fn transform(&self, x: ArrayView2<'_, f64>) -> Array2<u8> {
+    pub fn transform(&self, x: ArrayView2<'_, f64>) -> Array2<i16> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
 
@@ -179,43 +184,42 @@ impl OptimizedHistogramBuilder {
         }
 
         // Pre-allocate output array
-        let mut result = Array2::<u8>::zeros((n_samples, n_features));
+        let mut result = Array2::<i16>::zeros((n_samples, n_features));
 
-        // Process in parallel using ForkUnion's low-latency thread pool
-        // Using raw pointers to write directly to result buffer avoiding zip-map overhead
-        let result_ptr = result.as_mut_ptr() as usize;
-        let self_ref = self;
-        crate::fork_parallel::pfor_indexed(n_samples, move |row_idx| unsafe {
-            let row_ptr = (result_ptr as *mut u8).add(row_idx * n_features);
-            let out_row = std::slice::from_raw_parts_mut(row_ptr, n_features);
+        // Process in parallel by rows using Rayon
+        result
+            .axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .zip(x.axis_iter(Axis(0)).into_par_iter())
+            .for_each(|(mut out_row, in_row)| {
+                for (feature_idx, (&value, out_val)) in
+                    in_row.iter().zip(out_row.iter_mut()).enumerate()
+                {
+                    let imputed_value = if value.is_nan() {
+                        self.medians[feature_idx]
+                    } else {
+                        value
+                    };
 
-            for feature_idx in 0..n_features {
-                let value = x[[row_idx, feature_idx]];
-                let imputed_value = if value.is_nan() {
-                    self_ref.medians[feature_idx]
-                } else {
-                    value
-                };
+                    let edges = &self.bin_edges[feature_idx];
+                    let bin_idx = self.find_bin_fast(edges, imputed_value);
+                    let n_edges = self.n_bins_per_feature[feature_idx];
 
-                let edges = &self_ref.bin_edges[feature_idx];
-                let bin_idx = self_ref.find_bin_fast(edges, imputed_value);
-                let n_edges = self_ref.n_bins_per_feature[feature_idx];
-
-                let final_bin_idx = if n_edges > 0 {
-                    bin_idx.min(n_edges - 1)
-                } else {
-                    0
-                };
-                out_row[feature_idx] = final_bin_idx as u8;
-            }
-        });
+                    let final_bin_idx = if n_edges > 0 {
+                        bin_idx.min(n_edges - 1)
+                    } else {
+                        0
+                    };
+                    *out_val = final_bin_idx as i16;
+                }
+            });
 
         result
     }
 
     /// Transform a single row (for incremental prediction)
     #[inline]
-    pub fn transform_row(&self, row: &[f64]) -> Vec<u8> {
+    pub fn transform_row(&self, row: &[f64]) -> Vec<i16> {
         row.iter()
             .enumerate()
             .map(|(feature_idx, &value)| {
@@ -234,21 +238,21 @@ impl OptimizedHistogramBuilder {
                 } else {
                     0
                 };
-                final_bin_idx as u8
+                final_bin_idx as i16
             })
             .collect()
     }
 
     /// Batched transform for memory-constrained environments
-    pub fn transform_batched(&self, x: ArrayView2<'_, f64>, batch_size: usize) -> Array2<u8> {
+    pub fn transform_batched(&self, x: ArrayView2<'_, f64>, batch_size: usize) -> Array2<i16> {
         let config = crate::adaptive_parallel::get_parallel_config();
         let n_samples = x.nrows();
 
         if config.memory_efficient_mode && n_samples > batch_size {
             let n_features = x.ncols();
-            let mut result = Array2::<u8>::zeros((n_samples, n_features));
+            let mut result = Array2::<i16>::zeros((n_samples, n_features));
 
-            for (_batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
+            for (batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
                 let chunk_end = (chunk_start + batch_size).min(n_samples);
                 let chunk = x.slice(ndarray::s![chunk_start..chunk_end, ..]);
                 let batch_result = self.transform(chunk);

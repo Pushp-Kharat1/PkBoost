@@ -9,7 +9,6 @@ readme = "README.md"
 rust-version = "1.70"
 publish = false
 exclude = [
-    "pkboost_sklearn/*",
     "data/*",
     "raw_data/*",
     "temp/*",
@@ -20,15 +19,18 @@ exclude = [
     "*.csv",
     "target/*",
     "src/bin/*",
-    "profile.json.gz"
+    "profile.json.gz",
+    "test_suite/",
+    "*.ipynb",
 ]
 
 [dependencies]
 rand = "0.8"
+rayon = "1.8"
 csv = "1.3"
 mimalloc = "0.1"
 num_cpus = "1.16"
-ndarray = { version = "0.17.1" }
+ndarray = { version = "0.17.1", features = ["rayon"] }
 simsimd = "6.5.5"
 fork_union = "2.3"
 orx-parallel = "1"
@@ -40,52 +42,48 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [[bin]]
-name = "benchmark_fraud"
-path = "src/bin/benchmark_fraud.rs"
+name = "benchmark"
+path = "src/bin/benchmark.rs"
 
-# [[bin]]
-# name = "benchmark"
-# path = "src/bin/benchmark.rs"
+[[bin]]
+name = "test_living"
+path = "src/bin/test_living.rs"
 
-# [[bin]]
-# name = "test_living"
-# path = "src/bin/test_living.rs"
+[[bin]]
+name = "test_drift"
+path = "src/bin/test_drift.rs"
 
-# [[bin]]
-# name = "test_drift"
-# path = "src/bin/test_drift.rs"
+[[bin]]
+name = "test_static"
+path = "src/bin/test_static.rs"
 
-# [[bin]]
-# name = "test_static"
-# path = "src/bin/test_static.rs"
+[[bin]]
+name = "test_retrain"
+path = "src/bin/test_retrain.rs"
 
-# [[bin]]
-# name = "test_retrain"
-# path = "src/bin/test_retrain.rs"
+[[bin]]
+name = "test_regression"
+path = "src/bin/test_regression.rs"
 
-# [[bin]]
-# name = "test_regression"
-# path = "src/bin/test_regression.rs"
+[[bin]]
+name = "test_adaptive_regression"
+path = "src/bin/test_adaptive_regression.rs"
 
-# [[bin]]
-# name = "test_adaptive_regression"
-# path = "src/bin/test_adaptive_regression.rs"
+[[bin]]
+name = "test_precision"
+path = "src/bin/test_precision.rs"
 
-# [[bin]]
-# name = "test_precision"
-# path = "src/bin/test_precision.rs"
+[[bin]]
+name = "benchmark_progressive_precision"
+path = "src/bin/benchmark_progressive_precision.rs"
 
-# [[bin]]
-# name = "benchmark_progressive_precision"
-# path = "src/bin/benchmark_progressive_precision.rs"
+[[bin]]
+name = "threeway_comparison"
+path = "src/bin/threeway_comparison.rs"
 
-# [[bin]]
-# name = "threeway_comparison"
-# path = "src/bin/threeway_comparison.rs"
-
-# [[bin]]
-# name = "benchmark_ndarray"
-# path = "test_suite/benchmark_ndarray.rs"
+[[bin]]
+name = "benchmark_ndarray"
+path = "test_suite/benchmark_ndarray.rs"
 
 [lib]
 name = "pkboost"
