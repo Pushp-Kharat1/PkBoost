@@ -249,7 +249,7 @@
 
 ### 40. Comprehensive Docs
 - **README.md**: Quick start guide
-- **BENCHMARKS.md**: Detailed results
+- **BENCHMARK_REPRODUCTION.md**: Benchmark workflow and reproducibility notes
 - **MULTICLASS.md**: Multi-class usage
 - **SHANNON_ANALYSIS.md**: Entropy impact
 - **DRYBEAN_DRIFT_RESULTS.md**: Drift resilience

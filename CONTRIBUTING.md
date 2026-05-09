@@ -8,6 +8,7 @@ Thank you for your interest in contributing to PKBoost! This document provides g
 - [Getting Started](#getting-started)
 - [How to Contribute](#how-to-contribute)
 - [Development Setup](#development-setup)
+- [Documentation Contributions](#documentation-contributions)
 - [Coding Standards](#coding-standards)
 - [Pull Request Process](#pull-request-process)
 - [Reporting Issues](#reporting-issues)
@@ -26,8 +27,14 @@ By participating in this project, you agree to maintain a respectful and inclusi
    ```
 3. **Add the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/PKBoost-AI-Labs/pkboost.git
+   git remote add upstream https://github.com/Pushp-Kharat1/pkboost.git
    ```
+4. **Create a working branch**:
+   ```bash
+   git checkout -b <type>/short-description
+   ```
+
+For a documentation-first tour of the repository, start with [docs/README.md](docs/README.md).
 
 ## How to Contribute
 
@@ -48,6 +55,8 @@ For significant changes, please **open an issue first** to discuss:
 - Any breaking changes
 
 This helps avoid duplicate work and ensures alignment with project goals.
+
+For smaller documentation fixes, typo corrections, broken links, and onboarding improvements, you can usually open a pull request directly.
 
 ## Development Setup
 
@@ -76,15 +85,11 @@ cargo doc --no-deps --open
 ### Running Benchmarks
 
 ```bash
-# Main benchmark
-cargo run --release --bin benchmark
-
-# Drift tests
-cargo run --release --bin test_drift
-
-# Multi-class benchmark
-cargo run --release --bin multiclass_benchmark
+# Main benchmark entrypoint currently tracked in Cargo.toml
+cargo run --release --bin benchmark_fraud
 ```
+
+See [docs/BENCHMARK_REPRODUCTION.md](docs/BENCHMARK_REPRODUCTION.md) for the broader benchmark workflow and dataset notes.
 
 ### Python Bindings
 
@@ -98,6 +103,28 @@ maturin develop --release
 # Run Python tests
 python -m pytest tests/
 ```
+
+## Documentation Contributions
+
+Documentation improvements are a great way to contribute. Useful updates include:
+
+- Fixing stale commands, paths, or broken links
+- Clarifying installation, usage, or benchmark steps
+- Adding examples for Rust or Python workflows
+- Improving contributor onboarding material
+
+Before opening a docs PR:
+
+```bash
+# Example docs branch name
+git checkout -b docs/short-description
+
+# Optional but recommended validation steps
+cargo test
+python -m pytest tests/
+```
+
+If you only changed Markdown, note in the PR which commands you verified manually (for example, checked file paths, confirmed the active benchmark binary, or reviewed the docs hub links).
 
 ## Coding Standards
 
@@ -126,6 +153,7 @@ cargo fmt && cargo clippy && cargo test
 - Add doc comments (`///`) to all public items
 - Include examples in doc comments where helpful
 - Update README.md if adding major features
+- Update `docs/README.md` when adding or renaming major documentation files
 
 ### Testing
 
@@ -138,7 +166,7 @@ cargo fmt && cargo clippy && cargo test
 ### 1. Create a Feature Branch
 
 ```bash
-git checkout -b feature/your-feature-name
+git checkout -b <type>/short-description
 ```
 
 ### 2. Make Your Changes
@@ -151,7 +179,7 @@ git checkout -b feature/your-feature-name
 
 ```bash
 git add .
-git commit -m "feat: add new feature description"
+git commit -m "<type>: describe the improvement"
 ```
 
 Use conventional commit messages:
@@ -166,14 +194,20 @@ Use conventional commit messages:
 ### 4. Push and Create PR
 
 ```bash
-git push origin feature/your-feature-name
+git push origin <type>/short-description
 ```
+
+Examples:
+- `docs: clarify benchmark setup`
+- `fix: handle empty validation input`
+- `perf: speed up histogram building`
 
 Then open a Pull Request on GitHub with:
 - Clear title describing the change
 - Description of what and why
 - Reference to related issues (if any)
 - Screenshots/benchmarks for performance changes
+- Notes about any commands, links, or examples you validated
 
 ### 5. Review Process
 

@@ -27,31 +27,32 @@ Built from scratch in Rust, PKBoost (Performance-Based Knowledge Booster) manage
 - **Multi-Class Classification**: One-vs-Rest with softmax (92.36% on Dry Bean, 7 classes)
 - **165x Faster Adaptation**: Hierarchical Adaptive Boosting (HAB) with selective retraining
 - **2-17x Better Drift Resilience**: vs XGBoost/LightGBM on real-world data
-- **45 Production Features**: Complete feature list in [FEATURES.md](FEATURES.md)
+- **45 Production Features**: Complete feature list in [docs/FEATURES.md](docs/FEATURES.md)
 - **Real-World Validation**: Tested on Credit Card, Dry Bean, Iris datasets
 
-See [CHANGELOG_V2.md](CHANGELOG_V2.md) for full details.
+See [the v2 changelog](benchmark%20results/Extras/CHANGELOG_V2.md) for full details.
 
 ---
 
 ## Documentation
 
+- **[Documentation Hub](docs/README.md)** - Start here for guides, reports, and reference material
 - **[Python Package Guide](docs/PYTHON_BINDINGS.md)** - Python API, installation, examples
+- **[Scikit-learn Wrapper Guide](pkboost_sklearn/README.md)** - sklearn-style interface and integration examples
 - **[Benchmark Reproduction](docs/BENCHMARK_REPRODUCTION.md)** - Complete guide to reproduce all results
 - **[Drift Benchmark Report](docs/DRIFT_BENCHMARK_REPORT.md)** - 16 drift scenarios analysis
-- **[Scripts Guide](docs/SCRIPTS_GUIDE.md)** - Data preparation and utility scripts
+- **[Scripts Guide](docs/SCRIPTS_GUIDE.md)** - Current examples, utility entrypoints, and legacy notes
 - **[Features List](docs/FEATURES.md)** - All 45 production features
-- **[Changelog v2.0](docs/CHANGELOG_V2.md)** - What's new in version 2.0
+- **[Contributing Guide](CONTRIBUTING.md)** - Workflow for contributors and documentation updates
+- **[Changelog v2.0](benchmark%20results/Extras/CHANGELOG_V2.md)** - What's new in version 2.0
 
 ---
 
 ## Quick Start
 
-## To use it in Python Please refer to: [Python Bindings Guide](docs/PYTHON_BINDINGS.md)
+If you want to evaluate the project quickly, start with the Rust benchmark below. If you want the Python package instead, jump to the [Python Bindings Guide](docs/PYTHON_BINDINGS.md) or the [scikit-learn wrapper guide](pkboost_sklearn/README.md).
 
-## And For API's: [Python API README](python/README.md)
-
-## Try Kaggle Notebook: [Kaggle Notebook](https://www.kaggle.com/code/pushpkharat/pkboost-adaptive-gbdt-build-for-drift-resilience)
+Try the hosted benchmark notebook on [Kaggle](https://www.kaggle.com/code/pushpkharat/pkboost-adaptive-gbdt-build-for-drift-resilience).
 
 Clone the repository and build:
 
@@ -70,14 +71,14 @@ ls data/  # Should show creditcard_train.csv, creditcard_val.csv, etc.
 
 2. **Run benchmark**
 ```bash
-cargo run --release --bin benchmark
+cargo run --release --bin benchmark_fraud
 ```
 
 ---
 
 ## Basic Usage
 
-To train and predict (see `src/bin/benchmark.rs` for a full example):
+To train and predict (see `src/bin/benchmark_fraud.rs` for a runnable example):
 
 ```rust
 use pkboost::*;
@@ -150,7 +151,7 @@ fn load_csv(path: &str) -> Result<(Vec<Vec<f64>>, Vec<f64>), Box<dyn Error>> {
 - All other columns treated as numerical features
 - Empty values treated as NaN (median-imputed)
 - No categorical support (encode them first)
-- For data loading examples, see `src/bin/*.rs` files like `benchmark.rs`. Supports CSV via `csv` crate.
+- For data loading examples, see `src/bin/benchmark_fraud.rs`. CSV loading is handled via the `csv` crate.
 
 **Regression usage:**
 ```rust
@@ -193,7 +194,7 @@ println!("Accuracy: {:.2}%", accuracy * 100.0);
 - **Adaptation Mechanisms:** `AdversarialLivingBooster` monitors vulnerability scores to detect drift and trigger retraining, such as pruning unused features through "metabolism" tracking.
 - **Metrics Built-In:** PR-AUC, ROC-AUC, F1@0.5, and threshold optimization are available out-of-the-box.
 
-- For full mathematical derivations, Refer to: [Math.pdf](Math.pdf)
+- For full mathematical derivations, refer to [docs/Math.pdf](docs/Math.pdf)
 
 ---
 
@@ -203,7 +204,7 @@ println!("Accuracy: {:.2}%", accuracy * 100.0);
 
 PKBoost's auto-tuning provides an edge—it automatically detects imbalance and adjusts parameters. LGBM/XGB can match these results with tuning but require expert knowledge.
 
-**Reproducibility:** All benchmark code is in `src/bin/benchmark.rs`. Data splits: 60% train, 20% val, 20% test. LGBM/XGB used default params from their Rust crates. Full benchmarks (10+ datasets): See `BENCHMARKS.md`.
+**Reproducibility:** The benchmark entrypoint currently tracked in the manifest is `src/bin/benchmark_fraud.rs`. Data splits follow a 60% train, 20% val, 20% test workflow. For the full reproduction process and benchmark context, see [docs/BENCHMARK_REPRODUCTION.md](docs/BENCHMARK_REPRODUCTION.md).
 
 ### Standard Datasets
 
@@ -293,9 +294,9 @@ PKBoost features experimental drift detection that monitors model vulnerabilitie
 
 ---
 
-### For more details, see [BENCHMARKS.md](BENCHMARK.md)
+### For more details, see [docs/BENCHMARK_REPRODUCTION.md](docs/BENCHMARK_REPRODUCTION.md)
 
-### For Benchmarks in different drift conditions, refer [DRIFTBENCHMARK.md](DRIFTBENCHMARK.md)
+### For benchmarks in different drift conditions, see [docs/DRIFT_BENCHMARK_REPORT.md](docs/DRIFT_BENCHMARK_REPORT.md)
 
 ---
 
@@ -334,7 +335,7 @@ Where λ is adaptive based on imbalance severity.
 **Adaptation:** `AdversarialLivingBooster` – Monitors drift through vulnerability scores; triggers retraining, such as feature pruning via metabolism tracking.  
 **Parallelism:** `adaptive_parallel` – Hardware-aware Rayon config (cores, RAM detection).  
 **Evaluation:** Built-in calculations for PR-AUC, ROC-AUC, and F1.  
-**Drift Sims:** Scripts like `test_drift.rs` and `test_static.rs` for baseline comparisons.
+**Drift Sims:** Reproduction notes and benchmark reports are collected in `docs/` for the current repository snapshot.
 
 See `src/` for full implementation. Binary classification only.
 
@@ -384,15 +385,12 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 **Run:**
 ```bash
-cargo run --release --bin benchmark  # uses data/*.csv
+cargo run --release --bin benchmark_fraud
 ```
 
-**Drift tests:**
-```bash
-cargo run --bin test_drift
-```
+**More benchmark details:** See [docs/BENCHMARK_REPRODUCTION.md](docs/BENCHMARK_REPRODUCTION.md) and [docs/DRIFT_BENCHMARK_REPORT.md](docs/DRIFT_BENCHMARK_REPORT.md).
 
-Datasets sourced from UCI/ML.
+Datasets are sourced from UCI/ML and Kaggle as documented in the benchmark guide.
 
 ---
 
