@@ -9,7 +9,6 @@ use crate::{
     tree::{OptimizedTreeShannon, TreeParams},
 };
 use ndarray::{Array1, ArrayView1, ArrayView2};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
