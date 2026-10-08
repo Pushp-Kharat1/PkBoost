@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge)](https://pypi.org/project/pkboost/)
 [![PyPI](https://img.shields.io/pypi/v/pkboost?style=for-the-badge)](https://pypi.org/project/pkboost/)
 [![Downloads](https://img.shields.io/pepy/dt/pkboost?style=for-the-badge)](https://pepy.tech/project/pkboost)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+[![License](https://img.shields.io/badge/License-GPLv3%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17568991.svg)](https://doi.org/10.5281/zenodo.17568991)
 
 </div>
