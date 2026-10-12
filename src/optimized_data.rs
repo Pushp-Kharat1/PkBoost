@@ -1,4 +1,5 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
+use rayon::prelude::*;
 
 /// Map a stored bin value to a histogram slot.
 ///
@@ -35,6 +36,30 @@ pub fn gather_node_stats(
         .iter()
         .map(|&i| [grad[i], hess[i], y[i], 1.0])
         .collect()
+}
+
+/// Chunk size for [`gather_node_stats_par`].
+pub const GATHER_CHUNK: usize = 8192;
+
+/// Parallel version of [`gather_node_stats`]. Output position `k` always holds
+/// the stats for `indices[k]`: each output chunk is paired with the input
+/// chunk at the same offset via `zip` and written in place, so correctness
+/// does not depend on the order in which Rayon collects or flattens results.
+pub fn gather_node_stats_par(
+    indices: &[usize],
+    grad: &[f64],
+    hess: &[f64],
+    y: &[f64],
+) -> Vec<[f64; 4]> {
+    let mut out = vec![[0.0f64; 4]; indices.len()];
+    out.par_chunks_mut(GATHER_CHUNK)
+        .zip(indices.par_chunks(GATHER_CHUNK))
+        .for_each(|(dst, idx)| {
+            for (d, &i) in dst.iter_mut().zip(idx) {
+                *d = [grad[i], hess[i], y[i], 1.0];
+            }
+        });
+    out
 }
 
 #[inline]
@@ -189,8 +214,9 @@ impl TransposedData {
             self.n_samples
         );
 
-        // Interleaved [grad, hess, y, count] per bin: one cache line per
-        // update instead of four separate arrays. Per-bin summation order is
+        // Interleaved [grad, hess, y, count] per bin: the four accumulators
+        // for a bin are adjacent in memory (32 bytes) instead of spread across
+        // four separate arrays. Per-bin summation order is
         // unchanged, so results are bit-identical to the old layout.
         let mut bins = vec![[0.0f64; 4]; n_bins];
         let n_samples = self.n_samples;
@@ -691,6 +717,45 @@ mod tests {
         }
         // gather itself is bounds-checked
         assert!(std::panic::catch_unwind(|| gather_node_stats(&[50], g.as_slice().unwrap(), h.as_slice().unwrap(), y.as_slice().unwrap())).is_err());
+    }
+
+
+    /// Distinct, position-dependent values so any misplaced element is caught.
+    fn distinct_inputs(n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let g = (0..n).map(|i| i as f64 + 0.25).collect();
+        let h = (0..n).map(|i| -(i as f64) - 0.5).collect();
+        let y = (0..n).map(|i| (i as f64) * 3.0 + 0.125).collect();
+        (g, h, y)
+    }
+
+    #[test]
+    fn parallel_gather_matches_sequential_across_chunk_boundaries() {
+        let n = 100_000;
+        let (g, h, y) = distinct_inputs(n);
+        // A non-monotonic permutation-like order, so chunk misplacement or
+        // within-chunk reordering cannot accidentally line up.
+        let perm: Vec<usize> = (0..n).map(|k| (k * 7919 + 13) % n).collect();
+        let c = GATHER_CHUNK;
+        for len in [0, 1, c - 1, c, c + 1, 3 * c + 17, n] {
+            let idx = &perm[..len];
+            let seq = gather_node_stats(idx, &g, &h, &y);
+            let par = pool(4).install(|| gather_node_stats_par(idx, &g, &h, &y));
+            assert_eq!(par, seq, "len {len}");
+            for (k, &i) in idx.iter().enumerate() {
+                assert_eq!(par[k], [g[i], h[i], y[i], 1.0]);
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_gather_is_bounds_checked() {
+        let (g, h, y) = distinct_inputs(10);
+        let r = std::panic::catch_unwind(|| gather_node_stats_par(&[0, 10], &g, &h, &y));
+        assert!(r.is_err());
+    }
+
+    pub(crate) fn pool(threads: usize) -> rayon::ThreadPool {
+        rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
     }
 
 }

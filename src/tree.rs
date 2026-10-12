@@ -2,7 +2,7 @@
 // OPTIMIZED VERSION with ~30-40% speed improvement
 
 use crate::metrics::calculate_shannon_entropy;
-use crate::optimized_data::{gather_node_stats, CachedHistogram, TransposedData};
+use crate::optimized_data::{gather_node_stats, gather_node_stats_par, CachedHistogram, TransposedData};
 use ndarray::ArrayView1;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -534,10 +534,7 @@ fn build_hists_optimized(
         y.as_slice().expect("y must be contiguous"),
     );
     let stats: Vec<[f64; 4]> = if use_parallel {
-        indices
-            .par_chunks(8192)
-            .flat_map_iter(|c| gather_node_stats(c, g, h, yv))
-            .collect()
+        gather_node_stats_par(indices, g, h, yv)
     } else {
         gather_node_stats(indices, g, h, yv)
     };
@@ -759,4 +756,44 @@ mod tests {
         let sample_right = vec![5i16];
         assert_eq!(tree.predict_single(&sample_right), 0.9);
     }
+
+    /// Exercises build_hists_optimized on both the ordered (sparse node) and
+    /// per-feature (dense node) paths with parallelism enabled (>= 4 features,
+    /// >= 10_000 indices, multi-threaded pool), against a sequential reference.
+    #[test]
+    fn build_hists_parallel_paths_match_sequential_reference() {
+        use ndarray::{Array1, Array2};
+        let n = 60_000;
+        let nf = 6;
+        let n_bins = 17;
+        let binned = Array2::from_shape_fn((n, nf), |(i, j)| ((i * 31 + j * 7) % (n_bins + 3)) as i16);
+        let t = TransposedData::from_binned(binned);
+        let g = Array1::from_shape_fn(n, |i| i as f64 * 0.001 + 0.25);
+        let h = Array1::from_shape_fn(n, |i| 1.0 + (i % 97) as f64 * 0.01);
+        let y = Array1::from_shape_fn(n, |i| ((i * 13) % 2) as f64);
+        let feats: Vec<usize> = (0..nf).collect();
+        let params = TreeParams { n_bins_per_feature: vec![n_bins; nf], ..Default::default() };
+
+        // sparse (ordered path, 25k > GATHER_CHUNK*3) and dense (per-feature path)
+        let sparse: Vec<usize> = (0..n).filter(|i| i % 12 < 5).collect();
+        let dense: Vec<usize> = (0..n).filter(|i| i % 10 != 3).collect();
+        assert!(sparse.len() * 2 < n && sparse.len() >= 10_000);
+        assert!(dense.len() * 2 >= n);
+
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        for idx in [&sparse, &dense] {
+            let got = pool.install(|| {
+                build_hists_optimized(&feats, &t, &y.view(), &g.view(), &h.view(), idx, &params)
+            });
+            assert_eq!(got.len(), nf);
+            for (f, got_f) in got.iter().enumerate() {
+                let want = t.build_histogram_vectorized(f, idx, &g.view(), &h.view(), &y.view(), n_bins);
+                assert_eq!(got_f.grad, want.grad, "grad f={f} len={}", idx.len());
+                assert_eq!(got_f.hess, want.hess, "hess f={f}");
+                assert_eq!(got_f.y, want.y, "y f={f}");
+                assert_eq!(got_f.count, want.count, "count f={f}");
+            }
+        }
+    }
+
 }
