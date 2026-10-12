@@ -2,7 +2,7 @@
 // OPTIMIZED VERSION with ~30-40% speed improvement
 
 use crate::metrics::calculate_shannon_entropy;
-use crate::optimized_data::{CachedHistogram, TransposedData};
+use crate::optimized_data::{gather_node_stats, CachedHistogram, TransposedData};
 use ndarray::ArrayView1;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -502,39 +502,59 @@ fn build_hists_optimized(
     // Parallel threshold: balance overhead vs speedup
     let use_parallel = feature_indices.len() >= 4 && indices.len() >= 10000;
 
-    if use_parallel {
-        // Use Rayon parallel iterator for histogram building
-        feature_indices
-            .par_iter()
-            .enumerate()
-            .map(|(feat_idx_local, &actual_feat_idx)| {
-                CachedHistogram::build_vectorized(
-                    transposed_data,
-                    y,
-                    grad,
-                    hess,
-                    indices,
-                    actual_feat_idx,
-                    params.n_bins_per_feature[feat_idx_local],
-                )
-            })
+    // Small/sparse nodes: gather (grad, hess, y) once in index order so each
+    // feature reads them sequentially (1.5-2x faster below ~50% density on a
+    // 1M-row benchmark). Dense nodes (e.g. the root): indices are close to a
+    // linear scan already, so the per-feature path is faster. Both paths
+    // produce bit-identical histograms.
+    let use_ordered = indices.len() * 2 < transposed_data.n_samples;
+
+    if !use_ordered {
+        let build = |(feat_idx_local, &actual_feat_idx): (usize, &usize)| {
+            CachedHistogram::build_vectorized(
+                transposed_data,
+                y,
+                grad,
+                hess,
+                indices,
+                actual_feat_idx,
+                params.n_bins_per_feature[feat_idx_local],
+            )
+        };
+        return if use_parallel {
+            feature_indices.par_iter().enumerate().map(build).collect()
+        } else {
+            feature_indices.iter().enumerate().map(build).collect()
+        };
+    }
+
+    let (g, h, yv) = (
+        grad.as_slice().expect("grad must be contiguous"),
+        hess.as_slice().expect("hess must be contiguous"),
+        y.as_slice().expect("y must be contiguous"),
+    );
+    let stats: Vec<[f64; 4]> = if use_parallel {
+        indices
+            .par_chunks(8192)
+            .flat_map_iter(|c| gather_node_stats(c, g, h, yv))
             .collect()
     } else {
-        feature_indices
-            .iter()
-            .enumerate()
-            .map(|(feat_idx_local, &actual_feat_idx)| {
-                CachedHistogram::build_vectorized(
-                    transposed_data,
-                    y,
-                    grad,
-                    hess,
-                    indices,
-                    actual_feat_idx,
-                    params.n_bins_per_feature[feat_idx_local],
-                )
-            })
-            .collect()
+        gather_node_stats(indices, g, h, yv)
+    };
+
+    let build = |(feat_idx_local, &actual_feat_idx): (usize, &usize)| {
+        transposed_data.build_histogram_ordered(
+            actual_feat_idx,
+            indices,
+            &stats,
+            params.n_bins_per_feature[feat_idx_local],
+        )
+    };
+
+    if use_parallel {
+        feature_indices.par_iter().enumerate().map(build).collect()
+    } else {
+        feature_indices.iter().enumerate().map(build).collect()
     }
 }
 

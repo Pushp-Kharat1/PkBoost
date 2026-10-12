@@ -12,6 +12,49 @@ fn bin_index(value: i16, max_bin: usize) -> usize {
     (value as u16 as usize).min(max_bin)
 }
 
+/// Convert a legacy `i32` bin to the stored `i16` form with the same
+/// normalization as the other constructors: negatives become 0, and values
+/// above `i16::MAX` saturate to `i16::MAX` (which `bin_index` then clamps to
+/// the last histogram bin) instead of wrapping.
+#[inline]
+fn saturate_bin(value: i32) -> i16 {
+    value.clamp(0, i16::MAX as i32) as i16
+}
+
+/// Gather per-sample `[grad, hess, y, 1.0]` for one tree node, in `indices`
+/// order, so every feature's histogram can read them sequentially instead of
+/// re-gathering three random-access arrays per feature. Bounds-checked: this
+/// runs once per node, not once per feature.
+pub fn gather_node_stats(
+    indices: &[usize],
+    grad: &[f64],
+    hess: &[f64],
+    y: &[f64],
+) -> Vec<[f64; 4]> {
+    indices
+        .iter()
+        .map(|&i| [grad[i], hess[i], y[i], 1.0])
+        .collect()
+}
+
+#[inline]
+fn split_interleaved(bins: Vec<[f64; 4]>) -> CachedHistogram {
+    let n = bins.len();
+    let (mut g, mut h, mut y, mut c) = (
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+    );
+    for b in bins {
+        g.push(b[0]);
+        h.push(b[1]);
+        y.push(b[2]);
+        c.push(b[3]);
+    }
+    CachedHistogram::new(g, h, y, c)
+}
+
 #[cold]
 #[inline(never)]
 fn invalid_sample_index(idx: usize, n_samples: usize) -> ! {
@@ -88,7 +131,8 @@ impl TransposedData {
                     let row = &rows[sample_idx];
                     for feature_idx in feature_block_start..feature_block_end {
                         if feature_idx < row.len() {
-                            features[[feature_idx, sample_idx]] = row[feature_idx] as i16;
+                            features[[feature_idx, sample_idx]] =
+                                saturate_bin(row[feature_idx]);
                         }
                     }
                 }
@@ -120,11 +164,6 @@ impl TransposedData {
             return CachedHistogram::new(vec![], vec![], vec![], vec![]);
         }
 
-        let mut hist_grad = vec![0.0; n_bins];
-        let mut hist_hess = vec![0.0; n_bins];
-        let mut hist_y = vec![0.0; n_bins];
-        let mut hist_count = vec![0.0; n_bins];
-
         assert!(
             feature_idx < self.n_features,
             "feature_idx {feature_idx} out of range (n_features = {})",
@@ -136,7 +175,6 @@ impl TransposedData {
         let hess_slice = hess.as_slice().unwrap();
         let y_slice = y.as_slice().unwrap();
 
-        let len = indices.len();
         let max_bin = n_bins - 1;
 
         // The loops below use unchecked indexing, so these checks are what keep
@@ -151,135 +189,112 @@ impl TransposedData {
             self.n_samples
         );
 
-        // OPTIMIZATION: 8x unrolled loop with separated fetch/update phases.
-        // Index validation is fused into the loop (one predictable branch per
-        // 8 samples) instead of a separate pass over `indices`.
+        // Interleaved [grad, hess, y, count] per bin: one cache line per
+        // update instead of four separate arrays. Per-bin summation order is
+        // unchanged, so results are bit-identical to the old layout.
+        let mut bins = vec![[0.0f64; 4]; n_bins];
         let n_samples = self.n_samples;
-        let mut i = 0;
 
-        while i + 8 <= len {
-            unsafe {
-                // Phase 1: Fetch all indices
-                let idx0 = *indices.get_unchecked(i);
-                let idx1 = *indices.get_unchecked(i + 1);
-                let idx2 = *indices.get_unchecked(i + 2);
-                let idx3 = *indices.get_unchecked(i + 3);
-                let idx4 = *indices.get_unchecked(i + 4);
-                let idx5 = *indices.get_unchecked(i + 5);
-                let idx6 = *indices.get_unchecked(i + 6);
-                let idx7 = *indices.get_unchecked(i + 7);
-
-                // Bounds for every unchecked access below: feature_values,
-                // grad, hess and y all have at least n_samples elements.
-                let max_idx = idx0.max(idx1).max(idx2).max(idx3).max(idx4).max(idx5).max(idx6).max(idx7);
-                if max_idx >= n_samples {
-                    invalid_sample_index(max_idx, n_samples);
-                }
-
-                // Phase 2: Compute all bins
-                let bin0 = bin_index(*feature_values.get_unchecked(idx0), max_bin);
-                let bin1 = bin_index(*feature_values.get_unchecked(idx1), max_bin);
-                let bin2 = bin_index(*feature_values.get_unchecked(idx2), max_bin);
-                let bin3 = bin_index(*feature_values.get_unchecked(idx3), max_bin);
-                let bin4 = bin_index(*feature_values.get_unchecked(idx4), max_bin);
-                let bin5 = bin_index(*feature_values.get_unchecked(idx5), max_bin);
-                let bin6 = bin_index(*feature_values.get_unchecked(idx6), max_bin);
-                let bin7 = bin_index(*feature_values.get_unchecked(idx7), max_bin);
-
-                // Phase 3: Fetch all grad/hess/y values
-                let g0 = *grad_slice.get_unchecked(idx0);
-                let h0 = *hess_slice.get_unchecked(idx0);
-                let y0 = *y_slice.get_unchecked(idx0);
-
-                let g1 = *grad_slice.get_unchecked(idx1);
-                let h1 = *hess_slice.get_unchecked(idx1);
-                let y1 = *y_slice.get_unchecked(idx1);
-
-                let g2 = *grad_slice.get_unchecked(idx2);
-                let h2 = *hess_slice.get_unchecked(idx2);
-                let y2 = *y_slice.get_unchecked(idx2);
-
-                let g3 = *grad_slice.get_unchecked(idx3);
-                let h3 = *hess_slice.get_unchecked(idx3);
-                let y3 = *y_slice.get_unchecked(idx3);
-
-                let g4 = *grad_slice.get_unchecked(idx4);
-                let h4 = *hess_slice.get_unchecked(idx4);
-                let y4 = *y_slice.get_unchecked(idx4);
-
-                let g5 = *grad_slice.get_unchecked(idx5);
-                let h5 = *hess_slice.get_unchecked(idx5);
-                let y5 = *y_slice.get_unchecked(idx5);
-
-                let g6 = *grad_slice.get_unchecked(idx6);
-                let h6 = *hess_slice.get_unchecked(idx6);
-                let y6 = *y_slice.get_unchecked(idx6);
-
-                let g7 = *grad_slice.get_unchecked(idx7);
-                let h7 = *hess_slice.get_unchecked(idx7);
-                let y7 = *y_slice.get_unchecked(idx7);
-
-                // Phase 4: Accumulate
-                *hist_grad.get_unchecked_mut(bin0) += g0;
-                *hist_hess.get_unchecked_mut(bin0) += h0;
-                *hist_y.get_unchecked_mut(bin0) += y0;
-                *hist_count.get_unchecked_mut(bin0) += 1.0;
-
-                *hist_grad.get_unchecked_mut(bin1) += g1;
-                *hist_hess.get_unchecked_mut(bin1) += h1;
-                *hist_y.get_unchecked_mut(bin1) += y1;
-                *hist_count.get_unchecked_mut(bin1) += 1.0;
-
-                *hist_grad.get_unchecked_mut(bin2) += g2;
-                *hist_hess.get_unchecked_mut(bin2) += h2;
-                *hist_y.get_unchecked_mut(bin2) += y2;
-                *hist_count.get_unchecked_mut(bin2) += 1.0;
-
-                *hist_grad.get_unchecked_mut(bin3) += g3;
-                *hist_hess.get_unchecked_mut(bin3) += h3;
-                *hist_y.get_unchecked_mut(bin3) += y3;
-                *hist_count.get_unchecked_mut(bin3) += 1.0;
-
-                *hist_grad.get_unchecked_mut(bin4) += g4;
-                *hist_hess.get_unchecked_mut(bin4) += h4;
-                *hist_y.get_unchecked_mut(bin4) += y4;
-                *hist_count.get_unchecked_mut(bin4) += 1.0;
-
-                *hist_grad.get_unchecked_mut(bin5) += g5;
-                *hist_hess.get_unchecked_mut(bin5) += h5;
-                *hist_y.get_unchecked_mut(bin5) += y5;
-                *hist_count.get_unchecked_mut(bin5) += 1.0;
-
-                *hist_grad.get_unchecked_mut(bin6) += g6;
-                *hist_hess.get_unchecked_mut(bin6) += h6;
-                *hist_y.get_unchecked_mut(bin6) += y6;
-                *hist_count.get_unchecked_mut(bin6) += 1.0;
-
-                *hist_grad.get_unchecked_mut(bin7) += g7;
-                *hist_hess.get_unchecked_mut(bin7) += h7;
-                *hist_y.get_unchecked_mut(bin7) += y7;
-                *hist_count.get_unchecked_mut(bin7) += 1.0;
+        // 8x unrolled. Index validation is fused into the loop (one
+        // predictable branch per 8 samples) instead of a separate pass.
+        let mut chunks = indices.chunks_exact(8);
+        for chunk in &mut chunks {
+            let max_idx = chunk.iter().copied().fold(0, usize::max);
+            if max_idx >= n_samples {
+                invalid_sample_index(max_idx, n_samples);
             }
-            i += 8;
+            for &idx in chunk {
+                // SAFETY: idx < n_samples, and feature_values, grad, hess and
+                // y all have at least n_samples elements (asserted above).
+                // bin_index() always returns <= max_bin < bins.len().
+                unsafe {
+                    let bin = bin_index(*feature_values.get_unchecked(idx), max_bin);
+                    let e = bins.get_unchecked_mut(bin);
+                    e[0] += *grad_slice.get_unchecked(idx);
+                    e[1] += *hess_slice.get_unchecked(idx);
+                    e[2] += *y_slice.get_unchecked(idx);
+                    e[3] += 1.0;
+                }
+            }
+        }
+        for &idx in chunks.remainder() {
+            if idx >= n_samples {
+                invalid_sample_index(idx, n_samples);
+            }
+            let e = &mut bins[bin_index(feature_values[idx], max_bin)];
+            e[0] += grad_slice[idx];
+            e[1] += hess_slice[idx];
+            e[2] += y_slice[idx];
+            e[3] += 1.0;
         }
 
-        // Handle remaining elements
-        while i < len {
-            unsafe {
-                let idx = *indices.get_unchecked(i);
-                if idx >= n_samples {
-                    invalid_sample_index(idx, n_samples);
-                }
-                let bin = bin_index(*feature_values.get_unchecked(idx), max_bin);
-                *hist_grad.get_unchecked_mut(bin) += *grad_slice.get_unchecked(idx);
-                *hist_hess.get_unchecked_mut(bin) += *hess_slice.get_unchecked(idx);
-                *hist_y.get_unchecked_mut(bin) += *y_slice.get_unchecked(idx);
-                *hist_count.get_unchecked_mut(bin) += 1.0;
+        split_interleaved(bins)
+    }
+
+    /// Build one feature's histogram from stats pre-gathered by
+    /// [`gather_node_stats`] for the same `indices`. Use this when building
+    /// histograms for many features over the same node: the random-access
+    /// reads drop from four per sample per feature to one.
+    #[inline]
+    pub fn build_histogram_ordered(
+        &self,
+        feature_idx: usize,
+        indices: &[usize],
+        stats: &[[f64; 4]],
+        n_bins: usize,
+    ) -> CachedHistogram {
+        if n_bins == 0 {
+            return CachedHistogram::new(vec![], vec![], vec![], vec![]);
+        }
+        assert!(
+            feature_idx < self.n_features,
+            "feature_idx {feature_idx} out of range (n_features = {})",
+            self.n_features
+        );
+        assert_eq!(
+            stats.len(),
+            indices.len(),
+            "stats must be gathered for the same indices"
+        );
+
+        let feature_values = self.get_feature_values(feature_idx);
+        assert_eq!(feature_values.len(), self.n_samples);
+        let n_samples = self.n_samples;
+        let max_bin = n_bins - 1;
+        let mut bins = vec![[0.0f64; 4]; n_bins];
+
+        let mut idx_chunks = indices.chunks_exact(8);
+        let mut stat_chunks = stats.chunks_exact(8);
+        for (ic, sc) in (&mut idx_chunks).zip(&mut stat_chunks) {
+            let max_idx = ic.iter().copied().fold(0, usize::max);
+            if max_idx >= n_samples {
+                invalid_sample_index(max_idx, n_samples);
             }
-            i += 1;
+            for (&idx, st) in ic.iter().zip(sc) {
+                // SAFETY: idx < n_samples == feature_values.len(), and
+                // bin_index() always returns <= max_bin < bins.len().
+                unsafe {
+                    let bin = bin_index(*feature_values.get_unchecked(idx), max_bin);
+                    let e = bins.get_unchecked_mut(bin);
+                    e[0] += st[0];
+                    e[1] += st[1];
+                    e[2] += st[2];
+                    e[3] += st[3];
+                }
+            }
+        }
+        for (&idx, st) in idx_chunks.remainder().iter().zip(stat_chunks.remainder()) {
+            if idx >= n_samples {
+                invalid_sample_index(idx, n_samples);
+            }
+            let e = &mut bins[bin_index(feature_values[idx], max_bin)];
+            e[0] += st[0];
+            e[1] += st[1];
+            e[2] += st[2];
+            e[3] += st[3];
         }
 
-        CachedHistogram::new(hist_grad, hist_hess, hist_y, hist_count)
+        split_interleaved(bins)
     }
 }
 
@@ -619,4 +634,63 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    #[allow(deprecated)]
+    fn from_rows_normalizes_like_other_constructors() {
+        let rows = vec![vec![-1, 3], vec![i32::MIN, 40_000], vec![2, i16::MAX as i32]];
+        let t = TransposedData::from_rows(&rows);
+        assert_eq!(t.features, array![[0i16, 0, 2], [3, i16::MAX, i16::MAX]]);
+        let from_binned = TransposedData::from_binned(array![[-1i16, 3], [i16::MIN, 0], [2, 0]]);
+        assert_eq!(t.features.row(0), from_binned.features.row(0));
+        // negative -> bin 0, saturated -> last bin
+        let ones = Array1::<f64>::ones(3);
+        let h0 = t.build_histogram_vectorized(0, &[0, 1, 2], &ones.view(), &ones.view(), &ones.view(), 3);
+        assert_eq!(h0.count.to_vec(), vec![2.0, 0.0, 1.0]);
+        let h1 = t.build_histogram_vectorized(1, &[0, 1, 2], &ones.view(), &ones.view(), &ones.view(), 4);
+        assert_eq!(h1.count.to_vec(), vec![0.0, 0.0, 0.0, 3.0]);
+    }
+
+    fn random_case(n: usize, nb: usize, seed: u64) -> (TransposedData, Array1<f64>, Array1<f64>, Array1<f64>, Vec<usize>) {
+        let mut s = seed;
+        let mut next = move || { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (s >> 33) as usize };
+        let t = TransposedData::from_binned(Array2::from_shape_fn((n, 3), |_| (next() % (nb + 2)) as i16));
+        let g = Array1::from_shape_fn(n, |_| (next() % 1000) as f64 / 7.0 - 50.0);
+        let h = Array1::from_shape_fn(n, |_| (next() % 1000) as f64 / 13.0);
+        let y = Array1::from_shape_fn(n, |_| (next() % 2) as f64);
+        let idx: Vec<usize> = (0..n).filter(|_| next() % 3 != 0).collect();
+        (t, g, h, y, idx)
+    }
+
+    #[test]
+    fn ordered_matches_vectorized_bit_for_bit() {
+        for &(n, nb) in &[(0usize, 4usize), (5, 1), (37, 5), (1000, 32), (4099, 2)] {
+            let (t, g, h, y, idx) = random_case(n, nb, n as u64 + 1);
+            let stats = gather_node_stats(&idx, g.as_slice().unwrap(), h.as_slice().unwrap(), y.as_slice().unwrap());
+            for f in 0..3 {
+                let a = t.build_histogram_vectorized(f, &idx, &g.view(), &h.view(), &y.view(), nb);
+                let b = t.build_histogram_ordered(f, &idx, &stats, nb);
+                assert_eq!(a.grad, b.grad);
+                assert_eq!(a.hess, b.hess);
+                assert_eq!(a.y, b.y);
+                assert_eq!(a.count, b.count);
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_rejects_bad_inputs() {
+        let (t, g, h, y, idx) = random_case(50, 4, 9);
+        let stats = gather_node_stats(&idx, g.as_slice().unwrap(), h.as_slice().unwrap(), y.as_slice().unwrap());
+        assert!(std::panic::catch_unwind(|| t.build_histogram_ordered(3, &idx, &stats, 4)).is_err());
+        assert!(std::panic::catch_unwind(|| t.build_histogram_ordered(0, &idx[1..], &stats, 4)).is_err());
+        for pos in [2usize, idx.len() - 1] {
+            let mut bad = idx.clone();
+            bad[pos] = 50;
+            assert!(std::panic::catch_unwind(|| t.build_histogram_ordered(0, &bad, &stats, 4)).is_err());
+        }
+        // gather itself is bounds-checked
+        assert!(std::panic::catch_unwind(|| gather_node_stats(&[50], g.as_slice().unwrap(), h.as_slice().unwrap(), y.as_slice().unwrap())).is_err());
+    }
+
 }
