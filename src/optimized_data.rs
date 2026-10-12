@@ -1,5 +1,15 @@
-use crate::fork_parallel::pfor_zip_map;
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
+
+/// Map a stored bin value to a histogram slot.
+///
+/// The binner never emits negative values (NaNs are median-imputed before
+/// binning), but if one ever appears it goes to bin 0 rather than wrapping
+/// through `as usize` and silently landing in the last bin.
+#[inline(always)]
+fn bin_index(value: i16, max_bin: usize) -> usize {
+    debug_assert!(value >= 0, "negative bin value {value}");
+    (value.max(0) as usize).min(max_bin)
+}
 
 #[derive(Debug, Clone)]
 pub struct TransposedData {
@@ -9,27 +19,11 @@ pub struct TransposedData {
 }
 
 impl TransposedData {
-    /// Create TransposedData from binned Array2<i16> (zero-copy path from histogram_builder)
-    /// Input: (n_samples, n_features), Output: transposed to (n_features, n_samples)
+    /// Create TransposedData from binned Array2<i16> produced by histogram_builder.
+    /// Input: (n_samples, n_features), Output: transposed to (n_features, n_samples).
+    /// Note: this always allocates a new, feature-major copy of the data.
     pub fn from_binned(binned: Array2<i16>) -> Self {
-        let (n_samples, n_features) = binned.dim();
-        if n_samples == 0 || n_features == 0 {
-            return Self {
-                features: Array2::zeros((0, 0)),
-                n_samples: 0,
-                n_features: 0,
-            };
-        }
-
-        // Transpose: (n_samples, n_features) -> (n_features, n_samples)
-        // This creates an owned copy with optimal memory layout
-        let features = binned.t().as_standard_layout().to_owned();
-
-        Self {
-            features,
-            n_samples,
-            n_features,
-        }
+        Self::from_binned_view(binned.view())
     }
 
     /// Create TransposedData from binned ArrayView2<i16> (avoids extra allocation)
@@ -126,7 +120,23 @@ impl TransposedData {
         let len = indices.len();
         let max_bin = n_bins - 1;
 
-        debug_assert!(
+        // The loops below use unchecked indexing, so these checks are what keep
+        // this safe function sound in release builds. They are O(len) and cheap
+        // compared to the histogram work itself.
+        assert!(
+            feature_idx < self.n_features,
+            "feature_idx {feature_idx} out of range (n_features = {})",
+            self.n_features
+        );
+        assert_eq!(feature_values.len(), self.n_samples);
+        assert!(
+            grad_slice.len() >= self.n_samples
+                && hess_slice.len() >= self.n_samples
+                && y_slice.len() >= self.n_samples,
+            "grad/hess/y must have at least n_samples ({}) elements",
+            self.n_samples
+        );
+        assert!(
             indices.iter().all(|&idx| idx < self.n_samples),
             "Invalid sample index found"
         );
@@ -147,14 +157,14 @@ impl TransposedData {
                 let idx7 = *indices.get_unchecked(i + 7);
 
                 // Phase 2: Compute all bins
-                let bin0 = (*feature_values.get_unchecked(idx0) as usize).min(max_bin);
-                let bin1 = (*feature_values.get_unchecked(idx1) as usize).min(max_bin);
-                let bin2 = (*feature_values.get_unchecked(idx2) as usize).min(max_bin);
-                let bin3 = (*feature_values.get_unchecked(idx3) as usize).min(max_bin);
-                let bin4 = (*feature_values.get_unchecked(idx4) as usize).min(max_bin);
-                let bin5 = (*feature_values.get_unchecked(idx5) as usize).min(max_bin);
-                let bin6 = (*feature_values.get_unchecked(idx6) as usize).min(max_bin);
-                let bin7 = (*feature_values.get_unchecked(idx7) as usize).min(max_bin);
+                let bin0 = bin_index(*feature_values.get_unchecked(idx0), max_bin);
+                let bin1 = bin_index(*feature_values.get_unchecked(idx1), max_bin);
+                let bin2 = bin_index(*feature_values.get_unchecked(idx2), max_bin);
+                let bin3 = bin_index(*feature_values.get_unchecked(idx3), max_bin);
+                let bin4 = bin_index(*feature_values.get_unchecked(idx4), max_bin);
+                let bin5 = bin_index(*feature_values.get_unchecked(idx5), max_bin);
+                let bin6 = bin_index(*feature_values.get_unchecked(idx6), max_bin);
+                let bin7 = bin_index(*feature_values.get_unchecked(idx7), max_bin);
 
                 // Phase 3: Fetch all grad/hess/y values
                 let g0 = *grad_slice.get_unchecked(idx0);
@@ -237,7 +247,7 @@ impl TransposedData {
         while i < len {
             unsafe {
                 let idx = *indices.get_unchecked(i);
-                let bin = (*feature_values.get_unchecked(idx) as usize).min(max_bin);
+                let bin = bin_index(*feature_values.get_unchecked(idx), max_bin);
                 *hist_grad.get_unchecked_mut(bin) += *grad_slice.get_unchecked(idx);
                 *hist_hess.get_unchecked_mut(bin) += *hess_slice.get_unchecked(idx);
                 *hist_y.get_unchecked_mut(bin) += *y_slice.get_unchecked(idx);
@@ -313,6 +323,18 @@ impl CachedHistogram {
         let y_other = other.y.as_slice().unwrap();
         let count_other = other.count.as_slice().unwrap();
 
+        // Required for the unchecked indexing below to be sound.
+        assert!(
+            hess_self.len() == n
+                && y_self.len() == n
+                && count_self.len() == n
+                && grad_other.len() == n
+                && hess_other.len() == n
+                && y_other.len() == n
+                && count_other.len() == n,
+            "histogram length mismatch in subtract"
+        );
+
         // 4x unrolled subtraction with unsafe access
         let mut i = 0;
         while i + 4 <= n {
@@ -374,6 +396,86 @@ impl CachedHistogram {
             hess: Array1::from(hess_out),
             y: Array1::from(y_out),
             count: Array1::from(count_out),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    fn sample() -> TransposedData {
+        // 4 samples x 2 features
+        TransposedData::from_binned(array![[0i16, 1], [1, 1], [2, 0], [1, 0]])
+    }
+
+    #[test]
+    fn transposes_layout() {
+        let t = sample();
+        assert_eq!((t.n_features, t.n_samples), (2, 4));
+        assert_eq!(t.get_feature_values(0), &[0, 1, 2, 1]);
+        assert_eq!(t.get_feature_values(1), &[1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn histogram_matches_naive() {
+        let n = 37; // exercises both the 8x unrolled loop and the tail
+        let binned = Array2::from_shape_fn((n, 1), |(i, _)| (i % 5) as i16);
+        let t = TransposedData::from_binned(binned);
+        let g = Array1::from_shape_fn(n, |i| i as f64 * 0.5);
+        let h = Array1::from_shape_fn(n, |i| 1.0 + i as f64);
+        let y = Array1::from_shape_fn(n, |i| (i % 2) as f64);
+        let idx: Vec<usize> = (0..n).rev().collect();
+        let hist = t.build_histogram_vectorized(0, &idx, &g.view(), &h.view(), &y.view(), 5);
+        for b in 0..5 {
+            let members: Vec<usize> = (0..n).filter(|i| i % 5 == b).collect();
+            assert_eq!(hist.count[b], members.len() as f64);
+            assert_eq!(hist.grad[b], members.iter().map(|&i| g[i]).sum::<f64>());
+            assert_eq!(hist.hess[b], members.iter().map(|&i| h[i]).sum::<f64>());
+            assert_eq!(hist.y[b], members.iter().map(|&i| y[i]).sum::<f64>());
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid sample index")]
+    fn rejects_out_of_range_index() {
+        let t = sample();
+        let v = Array1::<f64>::zeros(4);
+        t.build_histogram_vectorized(0, &[0, 4], &v.view(), &v.view(), &v.view(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least n_samples")]
+    fn rejects_short_gradients() {
+        let t = sample();
+        let v = Array1::<f64>::zeros(4);
+        let short = Array1::<f64>::zeros(2);
+        t.build_histogram_vectorized(0, &[0], &short.view(), &v.view(), &v.view(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn subtract_rejects_mismatched_lengths() {
+        let a = CachedHistogram::new(vec![1.0; 5], vec![1.0; 5], vec![1.0; 5], vec![1.0; 5]);
+        let b = CachedHistogram::new(vec![1.0; 3], vec![1.0; 3], vec![1.0; 3], vec![1.0; 3]);
+        a.subtract(&b);
+    }
+
+    #[test]
+    fn subtract_roundtrip() {
+        let p = CachedHistogram::new(vec![5.0; 6], vec![4.0; 6], vec![3.0; 6], vec![2.0; 6]);
+        let c = CachedHistogram::new(vec![1.0; 6], vec![1.0; 6], vec![1.0; 6], vec![1.0; 6]);
+        let d = p.subtract(&c);
+        assert!(d.grad.iter().all(|&x| x == 4.0) && d.count.iter().all(|&x| x == 1.0));
+    }
+
+    #[test]
+    fn negative_bin_goes_to_zero_in_release() {
+        assert_eq!(bin_index(3, 4), 3);
+        assert_eq!(bin_index(9, 4), 4);
+        if !cfg!(debug_assertions) {
+            assert_eq!(bin_index(-1, 4), 0);
         }
     }
 }
