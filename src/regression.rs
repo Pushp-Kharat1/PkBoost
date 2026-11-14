@@ -217,16 +217,34 @@ impl PKBoostRegressor {
         }
 
         let mut rng = StdRng::seed_from_u64(self.random_seed);
+        let mut sample_indices: Vec<usize> = (0..n_samples).collect();
+        let mut feature_indices: Vec<usize> = (0..n_features).collect();
+        let mut tree_preds_buf = vec![0.0f64; n_samples];
+
         for iter in 0..self.n_estimators {
             let sample_size = (self.subsample * n_samples as f64) as usize;
-            let mut sample_indices: Vec<usize> = (0..n_samples).collect();
-            sample_indices.shuffle(&mut rng);
-            sample_indices.truncate(sample_size);
+            if sample_size < n_samples {
+                sample_indices.clear();
+                sample_indices.extend(0..n_samples);
+                sample_indices.shuffle(&mut rng);
+                sample_indices.truncate(sample_size);
+                sample_indices.sort_unstable();
+            } else if sample_indices.len() != n_samples {
+                sample_indices.clear();
+                sample_indices.extend(0..n_samples);
+            }
 
             let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
-            let mut feature_indices: Vec<usize> = (0..n_features).collect();
-            feature_indices.shuffle(&mut rng);
-            feature_indices.truncate(feature_size);
+            if feature_size < n_features {
+                feature_indices.clear();
+                feature_indices.extend(0..n_features);
+                feature_indices.shuffle(&mut rng);
+                feature_indices.truncate(feature_size);
+                feature_indices.sort_unstable();
+            } else if feature_indices.len() != n_features {
+                feature_indices.clear();
+                feature_indices.extend(0..n_features);
+            }
 
             let grad = self.get_gradient(y_slice, &train_preds);
             let hess = self.get_hessian(y_slice, &train_preds);
@@ -245,7 +263,7 @@ impl PKBoostRegressor {
                 feature_elimination_threshold: 0.01,
             };
 
-            tree.fit_optimized(
+            tree.fit_optimized_with_predictions(
                 &transposed,
                 y_slice,
                 &grad,
@@ -253,16 +271,12 @@ impl PKBoostRegressor {
                 &sample_indices,
                 &feature_indices,
                 &params,
+                &mut tree_preds_buf,
             );
-
-            let tree_preds: Vec<f64> = (0..n_samples)
-                .into_par_iter()
-                .map(|i| tree.predict_from_transposed(&transposed, i))
-                .collect();
 
             train_preds
                 .par_iter_mut()
-                .zip(tree_preds.par_iter())
+                .zip(tree_preds_buf.par_iter())
                 .for_each(|(p, &tp)| *p += self.learning_rate * tp);
 
             if let (Some(ref vt), Some(ref mut vp), Some((_, yv))) =

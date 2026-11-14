@@ -196,13 +196,13 @@
 //!
 //! ## When to Use PKBoost
 //!
-//! **✅ Good fit:**
+//! ** Good fit:**
 //! - Extreme class imbalance (<5% minority class)
 //! - Fraud detection, anomaly detection, rare event prediction
 //! - Data that evolves over time (concept drift)
 //! - When you want good results without hyperparameter tuning
 //!
-//! **❌ Consider alternatives for:**
+//! ** Consider alternatives for:**
 //! - Perfectly balanced datasets (XGBoost may be faster)
 //! - Very small datasets (<1,000 samples)
 //!
@@ -212,14 +212,14 @@
 //!
 //! ## License
 //!
-//! This project is licensed under the GPL-3.0 License.
+//! This project is dual licensed under the GPL-3.0 License and Apache 2.0, Authors may choose either.
 
 pub mod adaptive_parallel;
 pub mod adversarial;
 pub mod auto_params;
 pub mod auto_tuner;
 pub mod constants;
-pub mod fork_parallel;
+// pub mod fork_parallel;
 pub mod histogram_builder;
 pub mod huber_loss;
 pub mod living_booster;
