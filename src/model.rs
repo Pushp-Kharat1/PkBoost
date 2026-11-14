@@ -385,24 +385,19 @@ impl OptimizedPKBoostShannon {
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
 
-        // 🔥 OPTIMIZATION: Transform ONCE and cache (biggest speedup!)
-        // WHY: Eliminates 30-40% of runtime by avoiding repeated transforms
-        let x_processed = histogram_builder.transform(x);
-        self.binned_data_cache = Some(TransposedData::from_binned(x_processed));
+        // 🔥 OPTIMIZATION: Transform directly to columnar u8 TransposedData
+        // Eliminates intermediate row-major buffer, skips transposition, and pins bin edges in L1 cache
+        self.binned_data_cache = Some(histogram_builder.transform_transposed_u8(x));
         let transposed_data = self.binned_data_cache.as_ref().unwrap();
 
-        let (x_val_processed, mut val_preds) = if let Some((x_val, y_val)) = eval_set {
+        let (val_transposed, mut val_preds) = if let Some((x_val, y_val)) = eval_set {
             (
-                Some(histogram_builder.transform(x_val)),
+                Some(histogram_builder.transform_transposed_u8(x_val)),
                 Some(vec![self.base_score; y_val.len()]),
             )
         } else {
             (None, None)
         };
-
-        let val_transposed = x_val_processed
-            .as_ref()
-            .map(|x_val_proc| TransposedData::from_binned_view(x_val_proc.view()));
 
         if verbose {
             println!("Histogram building complete. Starting boosting iterations...");
@@ -419,6 +414,8 @@ impl OptimizedPKBoostShannon {
         let mut sample_indices: Vec<usize> = (0..n_samples).collect();
         let mut feature_indices: Vec<usize> = (0..n_features).collect();
         let mut tree_preds_buf = vec![0.0f64; n_samples];
+        let mut grad = vec![0.0f64; n_samples];
+        let mut hess = vec![0.0f64; n_samples];
 
         // boosting iterations
         for iteration in 0..self.n_estimators {
@@ -428,10 +425,17 @@ impl OptimizedPKBoostShannon {
             let sample_size = (self.subsample * n_samples as f64) as usize;
             if sample_size < n_samples {
                 sample_indices.clear();
-                sample_indices.extend(0..n_samples);
-                sample_indices.shuffle(&mut rng);
-                sample_indices.truncate(sample_size);
-                sample_indices.sort_unstable(); // Keeps memory sequential for cache locality
+                // Fast sorted subsampling: coin flip / Bernoulli selection
+                // Generates samples directly in increasing order without shuffle + sort!
+                let p = self.subsample;
+                for i in 0..n_samples {
+                    if rng.gen::<f64>() < p {
+                        sample_indices.push(i);
+                    }
+                }
+                if sample_indices.is_empty() {
+                    sample_indices.extend(0..n_samples);
+                }
             } else if sample_indices.len() != n_samples {
                 sample_indices.clear();
                 sample_indices.extend(0..n_samples);
@@ -449,10 +453,14 @@ impl OptimizedPKBoostShannon {
                 feature_indices.extend(0..n_features);
             }
 
-            // PHASE 1: Compute gradients and hessians
-            let (grad, hess) =
-                self.loss_fn
-                    .gradient_hessian(y_slice, &train_preds, self.scale_pos_weight);
+            // PHASE 1: Compute gradients and hessians in-place (zero allocation)
+            self.loss_fn.compute_gradient_hessian_into(
+                y_slice,
+                &train_preds,
+                self.scale_pos_weight,
+                &mut grad,
+                &mut hess,
+            );
 
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
 
@@ -601,8 +609,7 @@ impl OptimizedPKBoostShannon {
         }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
-        let x_proc = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_binned(x_proc);
+        let transposed_data = histogram_builder.transform_transposed_u8(x);
         let n_samples = transposed_data.n_samples;
         let sample_indices: Vec<usize> = (0..n_samples).collect();
 
@@ -628,8 +635,7 @@ impl OptimizedPKBoostShannon {
         }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
-        let x_proc = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_binned(x_proc);
+        let transposed_data = histogram_builder.transform_transposed_u8(x);
 
         let n_samples = transposed_data.n_samples;
         let mut predictions = vec![self.base_score; n_samples];
@@ -660,8 +666,7 @@ impl OptimizedPKBoostShannon {
         }
 
         let histogram_builder = self.histogram_builder.as_ref().unwrap();
-        let x_proc = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_binned(x_proc);
+        let transposed_data = histogram_builder.transform_transposed_u8(x);
         let mut all_predictions = Vec::with_capacity(transposed_data.n_samples);
 
         for batch_start in (0..transposed_data.n_samples).step_by(batch_size) {

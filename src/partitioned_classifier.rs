@@ -51,6 +51,7 @@ pub struct PartitionedClassifier {
     partition_error_ema: Vec<f64>,
     partition_sample_counts: Vec<usize>,
     specialist_weights: Vec<f64>,
+    #[allow(dead_code)]
     use_weighted_ensemble: bool,
 }
 

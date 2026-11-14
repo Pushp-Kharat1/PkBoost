@@ -10,33 +10,15 @@ pub fn calculate_shannon_entropy(count0: f64, count1: f64) -> f64 {
     fast_binary_entropy_from_ratio(p1)
 }
 
-use std::sync::LazyLock;
+use crate::entropy_table::{ENTROPY_LOOKUP, ENTROPY_LUT_SIZE};
 
-const ENTROPY_LUT_SIZE: usize = 10000;
-
-static ENTROPY_LOOKUP: LazyLock<Vec<f64>> = LazyLock::new(|| {
-    let mut lut = vec![0.0; ENTROPY_LUT_SIZE];
-    for i in 1..ENTROPY_LUT_SIZE {
-        let p = i as f64 / ENTROPY_LUT_SIZE as f64;
-        if p < 1.0 {
-            let p_comp = 1.0 - p;
-            lut[i] = if p > 1e-9 && p_comp > 1e-9 {
-                -p * p.log2() - p_comp * p_comp.log2()
-            } else {
-                0.0
-            };
-        }
-    }
-    lut
-});
-
-#[inline]
+#[inline(always)]
 pub fn fast_binary_entropy_from_ratio(positive_ratio: f64) -> f64 {
     if positive_ratio <= 0.0 || positive_ratio >= 1.0 {
         return 0.0;
     }
-    let idx = (positive_ratio * ENTROPY_LUT_SIZE as f64) as usize;
-    ENTROPY_LOOKUP[idx.min(ENTROPY_LUT_SIZE - 1)]
+    let idx = ((positive_ratio * ENTROPY_LUT_SIZE as f64) as usize).min(ENTROPY_LUT_SIZE - 1);
+    unsafe { *ENTROPY_LOOKUP.get_unchecked(idx) }
 }
 
 pub struct AUCCalculator {

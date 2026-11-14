@@ -60,6 +60,10 @@ crate-type = [
 ]
 path = "src/lib.rs"
 
+[[bin]]
+name = "benchmark"
+path = "benches/benchmark.rs"
+
 [dependencies.csv]
 version = "1.3"
 

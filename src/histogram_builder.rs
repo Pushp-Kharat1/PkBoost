@@ -1,3 +1,4 @@
+use crate::optimized_data::TransposedData;
 use ndarray::{Array2, ArrayView2, Axis};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -141,6 +142,7 @@ impl OptimizedHistogramBuilder {
     }
 
     #[inline]
+    #[allow(dead_code)]
     fn create_adaptive_bins(&self, sorted_values: &[f64]) -> Vec<f64> {
         Self::create_adaptive_bins_static(sorted_values, self.max_bins)
     }
@@ -217,6 +219,54 @@ impl OptimizedHistogramBuilder {
         result
     }
 
+    /// Direct columnar transform into `TransposedData` (shape: n_features x n_samples as u8).
+    /// Column-by-column binning ensures bin edges for each feature remain pinned in L1 cache,
+    /// eliminates intermediate row-major buffers and transposition, and halves memory footprint.
+    pub fn transform_transposed_u8(&self, x: ArrayView2<'_, f64>) -> TransposedData {
+        let n_samples = x.nrows();
+        let n_features = x.ncols();
+
+        if n_samples == 0 || n_features == 0 {
+            return TransposedData::from_binned_transposed_u8(
+                Array2::<u8>::zeros((n_features, n_samples)),
+            );
+        }
+
+        let mut result = Array2::<u8>::zeros((n_features, n_samples));
+
+        result
+            .axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(feature_idx, mut out_row)| {
+                let edges = &self.bin_edges[feature_idx];
+                let median = self.medians[feature_idx];
+                let n_edges = self.n_bins_per_feature[feature_idx];
+                let max_bin = if n_edges > 0 { (n_edges - 1).min(255) as u8 } else { 0 };
+
+                let out_slice = out_row.as_slice_mut().unwrap();
+                let col = x.column(feature_idx);
+
+                if let Some(slice) = col.as_slice() {
+                    for i in 0..n_samples {
+                        let val = slice[i];
+                        let imputed = if val.is_nan() { median } else { val };
+                        let b = self.find_bin_fast(edges, imputed);
+                        out_slice[i] = (b as u8).min(max_bin);
+                    }
+                } else {
+                    for i in 0..n_samples {
+                        let val = col[i];
+                        let imputed = if val.is_nan() { median } else { val };
+                        let b = self.find_bin_fast(edges, imputed);
+                        out_slice[i] = (b as u8).min(max_bin);
+                    }
+                }
+            });
+
+        TransposedData::from_binned_transposed_u8(result)
+    }
+
     /// Transform a single row (for incremental prediction)
     #[inline]
     pub fn transform_row(&self, row: &[f64]) -> Vec<i16> {
@@ -252,7 +302,7 @@ impl OptimizedHistogramBuilder {
             let n_features = x.ncols();
             let mut result = Array2::<i16>::zeros((n_samples, n_features));
 
-            for (batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
+            for (_batch_idx, chunk_start) in (0..n_samples).step_by(batch_size).enumerate() {
                 let chunk_end = (chunk_start + batch_size).min(n_samples);
                 let chunk = x.slice(ndarray::s![chunk_start..chunk_end, ..]);
                 let batch_result = self.transform(chunk);
