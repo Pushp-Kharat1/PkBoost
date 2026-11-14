@@ -139,11 +139,6 @@ impl PKBoostBuilder {
             let stats = compute_data_stats(x, y.as_slice().unwrap());
             let imbalance = (1.0 - stats.pos_ratio) / stats.pos_ratio.max(1e-6); // class weight
 
-            println!("\nAuto-Parameter Selection :");
-            println!("  Dataset shape: {} × {}", stats.n_rows, stats.n_cols);
-            println!("  Positive ratio: {:.3}", stats.pos_ratio);
-            println!("  Missing rate: {:.3}", stats.missing_rate);
-
             let mut model = OptimizedPKBoostShannon {
                 n_estimators: 0,
                 learning_rate: 0.0,
@@ -354,6 +349,20 @@ impl OptimizedPKBoostShannon {
                 "Hyperparams: lr={:.3}, depth={}, trees={}, scale_pos_weight={:.2}",
                 self.learning_rate, self.max_depth, self.n_estimators, self.scale_pos_weight
             );
+            if self.auto_tuned {
+                println!("Mode: Auto-tuned");
+                println!("  Learning rate  : {:.4}", self.learning_rate);
+                println!("  Max depth      : {}", self.max_depth);
+                println!(
+                    "  Estimators     : {} (early stop @ {})",
+                    self.n_estimators, self.early_stopping_rounds
+                );
+                println!("  Col sample     : {:.2}", self.colsample_bytree);
+                println!("  Reg lambda     : {:.4}", self.reg_lambda);
+                println!("  Min child wt   : {:.2}", self.min_child_weight);
+                println!("  Gamma          : {:.2}", self.gamma);
+                println!("  MI weight      : {:.2}", self.mi_weight);
+            }
             println!(
                 "Validation set: {}",
                 if eval_set.is_some() { "Yes" } else { "No" }
@@ -379,8 +388,7 @@ impl OptimizedPKBoostShannon {
         // 🔥 OPTIMIZATION: Transform ONCE and cache (biggest speedup!)
         // WHY: Eliminates 30-40% of runtime by avoiding repeated transforms
         let x_processed = histogram_builder.transform(x);
-        let transposed_data = TransposedData::from_binned(x_processed);
-        self.binned_data_cache = Some(transposed_data.clone());
+        self.binned_data_cache = Some(TransposedData::from_binned(x_processed));
         let transposed_data = self.binned_data_cache.as_ref().unwrap();
 
         let (x_val_processed, mut val_preds) = if let Some((x_val, y_val)) = eval_set {
@@ -407,11 +415,10 @@ impl OptimizedPKBoostShannon {
             }
         }
 
-        // Timing accumulators (reset every 100 iterations to show breakdown)
-        let mut time_grad_hess = std::time::Duration::ZERO;
-        let mut time_tree_fit = std::time::Duration::ZERO;
-        let mut time_predict = std::time::Duration::ZERO;
-        let mut time_update = std::time::Duration::ZERO;
+        // Pre-allocate persistent buffers to avoid allocations per iteration
+        let mut sample_indices: Vec<usize> = (0..n_samples).collect();
+        let mut feature_indices: Vec<usize> = (0..n_features).collect();
+        let mut tree_preds_buf = vec![0.0f64; n_samples];
 
         // boosting iterations
         for iteration in 0..self.n_estimators {
@@ -419,21 +426,33 @@ impl OptimizedPKBoostShannon {
 
             // stochastic gradient boosting - subsample rows
             let sample_size = (self.subsample * n_samples as f64) as usize;
-            let mut sample_indices: Vec<usize> = (0..n_samples).collect();
-            sample_indices.shuffle(&mut rng);
-            sample_indices.truncate(sample_size);
+            if sample_size < n_samples {
+                sample_indices.clear();
+                sample_indices.extend(0..n_samples);
+                sample_indices.shuffle(&mut rng);
+                sample_indices.truncate(sample_size);
+                sample_indices.sort_unstable(); // Keeps memory sequential for cache locality
+            } else if sample_indices.len() != n_samples {
+                sample_indices.clear();
+                sample_indices.extend(0..n_samples);
+            }
 
             let feature_size = ((self.colsample_bytree * n_features as f64) as usize).max(1);
-            let mut feature_indices: Vec<usize> = (0..n_features).collect();
-            feature_indices.shuffle(&mut rng);
-            feature_indices.truncate(feature_size);
+            if feature_size < n_features {
+                feature_indices.clear();
+                feature_indices.extend(0..n_features);
+                feature_indices.shuffle(&mut rng);
+                feature_indices.truncate(feature_size);
+                feature_indices.sort_unstable();
+            } else if feature_indices.len() != n_features {
+                feature_indices.clear();
+                feature_indices.extend(0..n_features);
+            }
 
             // PHASE 1: Compute gradients and hessians
-            let t0 = Instant::now();
             let (grad, hess) =
                 self.loss_fn
                     .gradient_hessian(y_slice, &train_preds, self.scale_pos_weight);
-            time_grad_hess += t0.elapsed();
 
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
 
@@ -450,9 +469,8 @@ impl OptimizedPKBoostShannon {
                 feature_elimination_threshold: 0.01,
             };
 
-            // PHASE 2: Tree fitting (includes histogram building)
-            let t1 = Instant::now();
-            tree.fit_optimized(
+            // PHASE 2 & 3: Tree fitting + direct leaf prediction reuse
+            tree.fit_optimized_with_predictions(
                 &transposed_data,
                 y_slice,
                 &grad,
@@ -460,70 +478,27 @@ impl OptimizedPKBoostShannon {
                 &sample_indices,
                 &feature_indices,
                 &tree_params,
+                &mut tree_preds_buf,
             );
-            time_tree_fit += t1.elapsed();
 
-            // Print timing breakdown every 100 iterations
-            if (iteration + 1) % 100 == 0 && verbose {
+            // Guard against gradient collapse
+            if (iteration + 1) % 100 == 0 {
                 let grad_norm: f64 = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
-                let grad_mean: f64 = grad.iter().sum::<f64>() / grad.len() as f64;
-                let pred_min = train_preds.iter().cloned().fold(f64::INFINITY, f64::min);
-                let pred_max = train_preds
-                    .iter()
-                    .cloned()
-                    .fold(f64::NEG_INFINITY, f64::max);
-                let pred_mean = train_preds.iter().sum::<f64>() / train_preds.len() as f64;
-
-                eprintln!("DEBUG Iter {}: grad_norm={:.4}, grad_mean={:.6}, pred_range=[{:.2}, {:.2}], pred_mean={:.4}",
-                         iteration + 1, grad_norm, grad_mean, pred_min, pred_max, pred_mean);
-
-                // Print timing breakdown
-                let total_phase_time = time_grad_hess + time_tree_fit + time_predict + time_update;
-                eprintln!("  TIMING (last 100 iters): grad/hess={:.2}s ({:.1}%), tree_fit={:.2}s ({:.1}%), predict={:.2}s ({:.1}%), update={:.2}s ({:.1}%)",
-                    time_grad_hess.as_secs_f64(), 100.0 * time_grad_hess.as_secs_f64() / total_phase_time.as_secs_f64(),
-                    time_tree_fit.as_secs_f64(), 100.0 * time_tree_fit.as_secs_f64() / total_phase_time.as_secs_f64(),
-                    time_predict.as_secs_f64(), 100.0 * time_predict.as_secs_f64() / total_phase_time.as_secs_f64(),
-                    time_update.as_secs_f64(), 100.0 * time_update.as_secs_f64() / total_phase_time.as_secs_f64());
-
-                // Reset timers
-                time_grad_hess = std::time::Duration::ZERO;
-                time_tree_fit = std::time::Duration::ZERO;
-                time_predict = std::time::Duration::ZERO;
-                time_update = std::time::Duration::ZERO;
-
-                if grad_norm > 10000.0 {
-                    eprintln!("  WARNING: Gradient explosion detected!");
-                }
-                if pred_max > 50.0 || pred_min < -50.0 {
-                    eprintln!("  WARNING: Prediction values out of safe range!");
-                }
-
                 if grad_norm < 0.001 {
-                    eprintln!("  WARNING: Gradients nearly zero - stopping early");
-                    return Ok(());
+                    // Gradients have vanished - continuing would waste time
+                    break;
                 }
             }
 
-            // PHASE 3: Batch prediction
-            let t2 = Instant::now();
-            let sample_indices_vec: Vec<usize> = (0..n_samples).collect();
-            let tree_preds = tree.predict_batch(&transposed_data, &sample_indices_vec);
-            time_predict += t2.elapsed();
-
             let adaptive_lr = self.learning_rate;
 
-            // PHASE 4: Update predictions
-            let t3 = Instant::now();
+            // PHASE 4: Fused update and clamping in a single parallel pass
             train_preds
                 .par_iter_mut()
-                .zip(tree_preds.par_iter())
-                .for_each(|(current_pred, tree_pred)| *current_pred += adaptive_lr * tree_pred);
-
-            // clamp to prevent numerical instability
-            train_preds.par_iter_mut().for_each(|pred| {
-                *pred = pred.clamp(-10.0, 10.0);
-            });
-            time_update += t3.elapsed();
+                .zip(tree_preds_buf.par_iter())
+                .for_each(|(current_pred, &tree_pred)| {
+                    *current_pred = (*current_pred + adaptive_lr * tree_pred).clamp(-10.0, 10.0);
+                });
 
             if let (Some(ref val_transposed_data), Some(ref mut val_preds_ref), Some((_, y_val))) =
                 (val_transposed.as_ref(), val_preds.as_mut(), eval_set)
@@ -608,14 +583,13 @@ impl OptimizedPKBoostShannon {
         self.fitted = true;
         self.trees.truncate(self.best_iteration + 1);
 
-        if verbose {
-            let final_time = fit_start_time.elapsed().as_secs_f64();
-            println!("\n=== Training Complete ===");
-            println!("Best iteration: {}", self.best_iteration + 1);
-            println!("Best score: {:.6}", self.best_score);
-            println!("Total time: {:.2}s", final_time);
-            println!("Final trees: {}", self.trees.len());
-        }
+        // Always print training results - these are essential output
+        let final_time = fit_start_time.elapsed().as_secs_f64();
+        println!("\n=== Training Complete ===");
+        println!("Best iteration: {}", self.best_iteration + 1);
+        println!("Best score: {:.6}", self.best_score);
+        println!("Total time: {:.2}s", final_time);
+        println!("Final trees: {}", self.trees.len());
 
         Ok(())
     }

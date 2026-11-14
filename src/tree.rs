@@ -2,13 +2,14 @@
 // OPTIMIZED VERSION with ~30-40% speed improvement
 
 use crate::metrics::calculate_shannon_entropy;
-use crate::optimized_data::{gather_node_stats, gather_node_stats_par, CachedHistogram, TransposedData};
+use crate::optimized_data::{
+    gather_node_stats, gather_node_stats_par, CachedHistogram, TransposedData,
+};
 use ndarray::ArrayView1;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HistSplitResult {
@@ -199,6 +200,52 @@ impl OptimizedTreeShannon {
         feature_indices: &[usize],
         params: &TreeParams,
     ) {
+        self.fit_optimized_internal(
+            transposed_data,
+            y,
+            grad,
+            hess,
+            sample_indices,
+            feature_indices,
+            params,
+            None,
+        );
+    }
+
+    pub fn fit_optimized_with_predictions(
+        &mut self,
+        transposed_data: &TransposedData,
+        y: &[f64],
+        grad: &[f64],
+        hess: &[f64],
+        sample_indices: &[usize],
+        feature_indices: &[usize],
+        params: &TreeParams,
+        tree_preds: &mut [f64],
+    ) {
+        self.fit_optimized_internal(
+            transposed_data,
+            y,
+            grad,
+            hess,
+            sample_indices,
+            feature_indices,
+            params,
+            Some(tree_preds),
+        );
+    }
+
+    fn fit_optimized_internal(
+        &mut self,
+        transposed_data: &TransposedData,
+        y: &[f64],
+        grad: &[f64],
+        hess: &[f64],
+        sample_indices: &[usize],
+        feature_indices: &[usize],
+        params: &TreeParams,
+        mut tree_preds: Option<&mut [f64]>,
+    ) {
         if transposed_data.n_samples == 0 || sample_indices.is_empty() {
             return;
         }
@@ -218,7 +265,6 @@ impl OptimizedTreeShannon {
         let hess_view = ArrayView1::from(hess);
 
         let max_nodes = 2_usize.pow(self.max_depth as u32 + 1);
-        let mut workspace = TreeBuildingWorkspace::new(sample_indices.len());
 
         // OPTIMIZATION 1: Build root histogram once
         let root_hists = build_hists_optimized(
@@ -234,7 +280,7 @@ impl OptimizedTreeShannon {
         let mut queue: VecDeque<SplitTask> = VecDeque::with_capacity(max_nodes / 2);
         queue.push_back(SplitTask {
             node_index: 0,
-            sample_indices: Arc::new(sample_indices.to_vec()),
+            sample_indices: sample_indices.to_vec(),
             histogram: root_hists,
             depth: 0,
         });
@@ -255,7 +301,14 @@ impl OptimizedTreeShannon {
                 || n_samples < params.min_samples_split
                 || h_total < params.min_child_weight
             {
-                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+                let leaf_val = -g_total / (h_total + params.reg_lambda);
+                self.set_leaf(task.node_index, leaf_val);
+                if let Some(ref mut out_preds) = tree_preds {
+                    for &idx in &task.sample_indices {
+                        out_preds[idx] = leaf_val;
+                    }
+                }
+                INDEX_POOL.with(|p| p.borrow_mut().release(task.sample_indices));
                 continue;
             }
 
@@ -267,74 +320,108 @@ impl OptimizedTreeShannon {
             );
 
             if best_split.is_none() || best_split.unwrap().1.best_gain <= 1e-6 {
-                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+                let leaf_val = -g_total / (h_total + params.reg_lambda);
+                self.set_leaf(task.node_index, leaf_val);
+                if let Some(ref mut out_preds) = tree_preds {
+                    for &idx in &task.sample_indices {
+                        out_preds[idx] = leaf_val;
+                    }
+                }
+                INDEX_POOL.with(|p| p.borrow_mut().release(task.sample_indices));
                 continue;
             }
 
             let (best_feature_local_idx, split_info) = best_split.unwrap();
             let best_feature_global_idx = self.feature_indices[best_feature_local_idx];
 
-            // OPTIMIZATION 5: Fast partitioning with pre-allocated buffers
+            let (mut left_indices, mut right_indices) = INDEX_POOL.with(|p| {
+                let mut pool = p.borrow_mut();
+                (
+                    pool.acquire(task.sample_indices.len()),
+                    pool.acquire(task.sample_indices.len()),
+                )
+            });
+
+            // OPTIMIZATION 5: Fast branchless partitioning
             partition_into_optimized(
                 &task.sample_indices,
                 best_feature_global_idx,
                 split_info.best_bin_idx,
                 transposed_data,
-                &mut workspace.left_indices,
-                &mut workspace.right_indices,
+                &mut left_indices,
+                &mut right_indices,
             );
 
-            if workspace.left_indices.is_empty() || workspace.right_indices.is_empty() {
-                self.set_leaf(task.node_index, -g_total / (h_total + params.reg_lambda));
+            if left_indices.is_empty() || right_indices.is_empty() {
+                INDEX_POOL.with(|p| {
+                    let mut pool = p.borrow_mut();
+                    pool.release(left_indices);
+                    pool.release(right_indices);
+                });
+                let leaf_val = -g_total / (h_total + params.reg_lambda);
+                self.set_leaf(task.node_index, leaf_val);
+                if let Some(ref mut out_preds) = tree_preds {
+                    for &idx in &task.sample_indices {
+                        out_preds[idx] = leaf_val;
+                    }
+                }
+                INDEX_POOL.with(|p| p.borrow_mut().release(task.sample_indices));
                 continue;
             }
 
-            // OPTIMIZATION 6: Histogram subtraction (only build smaller child)
-            let (left_hists, right_hists) =
-                if workspace.left_indices.len() < workspace.right_indices.len() {
-                    let smaller_hists = build_hists_optimized(
-                        &self.feature_indices,
-                        transposed_data,
-                        &y_view,
-                        &grad_view,
-                        &hess_view,
-                        &workspace.left_indices,
-                        params,
-                    );
-                    // OPTIMIZATION 6: Histogram subtraction with Rayon
-                    let larger_hists: Vec<CachedHistogram> = task
-                        .histogram
-                        .par_iter()
-                        .zip(&smaller_hists)
-                        .map(|(parent, sibling)| parent.subtract(sibling))
-                        .collect();
-                    (smaller_hists, larger_hists)
-                } else {
-                    let smaller_hists = build_hists_optimized(
-                        &self.feature_indices,
-                        transposed_data,
-                        &y_view,
-                        &grad_view,
-                        &hess_view,
-                        &workspace.right_indices,
-                        params,
-                    );
-                    // OPTIMIZATION 6: Histogram subtraction with Rayon
-                    let larger_hists: Vec<CachedHistogram> = task
-                        .histogram
-                        .par_iter()
-                        .zip(&smaller_hists)
-                        .map(|(parent, sibling)| parent.subtract(sibling))
-                        .collect();
-                    (larger_hists, smaller_hists)
-                };
+            // Parent sample_indices is now fully partitioned - recycle it to pool
+            INDEX_POOL.with(|p| p.borrow_mut().release(task.sample_indices));
 
             let left_child_index = next_node_in_vec;
             let right_child_index = next_node_in_vec + 1;
 
             if right_child_index >= self.node_types.len() {
+                INDEX_POOL.with(|p| {
+                    let mut pool = p.borrow_mut();
+                    pool.release(left_indices);
+                    pool.release(right_indices);
+                });
+                let leaf_val = -g_total / (h_total + params.reg_lambda);
+                self.set_leaf(task.node_index, leaf_val);
                 continue;
             }
+
+            // OPTIMIZATION 6: Histogram subtraction (only build smaller child)
+            let (left_hists, right_hists) = if left_indices.len() < right_indices.len() {
+                let smaller_hists = build_hists_optimized(
+                    &self.feature_indices,
+                    transposed_data,
+                    &y_view,
+                    &grad_view,
+                    &hess_view,
+                    &left_indices,
+                    params,
+                );
+                let larger_hists: Vec<CachedHistogram> = task
+                    .histogram
+                    .par_iter()
+                    .zip(&smaller_hists)
+                    .map(|(parent, sibling)| parent.subtract(sibling))
+                    .collect();
+                (smaller_hists, larger_hists)
+            } else {
+                let smaller_hists = build_hists_optimized(
+                    &self.feature_indices,
+                    transposed_data,
+                    &y_view,
+                    &grad_view,
+                    &hess_view,
+                    &right_indices,
+                    params,
+                );
+                let larger_hists: Vec<CachedHistogram> = task
+                    .histogram
+                    .par_iter()
+                    .zip(&smaller_hists)
+                    .map(|(parent, sibling)| parent.subtract(sibling))
+                    .collect();
+                (larger_hists, smaller_hists)
+            };
 
             self.set_split(
                 task.node_index,
@@ -347,18 +434,45 @@ impl OptimizedTreeShannon {
 
             queue.push_back(SplitTask {
                 node_index: left_child_index,
-                // Use take() instead of clone() - moves ownership, no allocation
-                sample_indices: Arc::new(std::mem::take(&mut workspace.left_indices)),
+                sample_indices: left_indices,
                 histogram: left_hists,
                 depth: task.depth + 1,
             });
             queue.push_back(SplitTask {
                 node_index: right_child_index,
-                // Use take() instead of clone() - moves ownership, no allocation
-                sample_indices: Arc::new(std::mem::take(&mut workspace.right_indices)),
+                sample_indices: right_indices,
                 histogram: right_hists,
                 depth: task.depth + 1,
             });
+        }
+
+        // OPTIMIZATION: Predict out-of-bag rows (only for samples that were not in sample_indices)
+        if let Some(ref mut out_preds) = tree_preds {
+            if sample_indices.len() < transposed_data.n_samples {
+                let is_sorted = sample_indices.windows(2).all(|w| w[0] <= w[1]);
+                if is_sorted {
+                    let mut sample_iter = sample_indices.iter().copied().peekable();
+                    for i in 0..transposed_data.n_samples {
+                        if sample_iter.peek() == Some(&i) {
+                            sample_iter.next();
+                        } else {
+                            out_preds[i] = self.predict_from_transposed(transposed_data, i);
+                        }
+                    }
+                } else {
+                    let mut in_bag = vec![false; transposed_data.n_samples];
+                    for &i in sample_indices {
+                        if i < in_bag.len() {
+                            in_bag[i] = true;
+                        }
+                    }
+                    for i in 0..transposed_data.n_samples {
+                        if !in_bag[i] {
+                            out_preds[i] = self.predict_from_transposed(transposed_data, i);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -390,7 +504,7 @@ impl Default for TreeParams {
 
 struct SplitTask {
     node_index: usize,
-    sample_indices: Arc<Vec<usize>>,
+    sample_indices: Vec<usize>,
     histogram: Vec<CachedHistogram>,
     depth: usize,
 }
@@ -407,7 +521,7 @@ struct IndexPool {
 impl IndexPool {
     fn new() -> Self {
         Self {
-            buffers: Vec::with_capacity(8),
+            buffers: Vec::with_capacity(32),
         }
     }
 
@@ -416,49 +530,23 @@ impl IndexPool {
             .pop()
             .map(|mut buf| {
                 buf.clear();
-                buf.reserve(capacity.saturating_sub(buf.capacity()));
+                if buf.capacity() < capacity {
+                    buf.reserve(capacity - buf.capacity());
+                }
                 buf
             })
             .unwrap_or_else(|| Vec::with_capacity(capacity))
     }
 
-    fn release(&mut self, buf: Vec<usize>) {
-        if buf.capacity() <= 8192 && self.buffers.len() < 16 {
+    fn release(&mut self, mut buf: Vec<usize>) {
+        buf.clear();
+        if self.buffers.len() < 32 {
             self.buffers.push(buf);
         }
     }
 }
 
-struct TreeBuildingWorkspace {
-    left_indices: Vec<usize>,
-    right_indices: Vec<usize>,
-}
-
-impl TreeBuildingWorkspace {
-    fn new(n_samples: usize) -> Self {
-        INDEX_POOL.with(|pool| {
-            let mut pool = pool.borrow_mut();
-            Self {
-                left_indices: pool.acquire(n_samples / 2),
-                right_indices: pool.acquire(n_samples / 2),
-            }
-        })
-    }
-}
-
-impl Drop for TreeBuildingWorkspace {
-    fn drop(&mut self) {
-        INDEX_POOL.with(|pool| {
-            let mut pool = pool.borrow_mut();
-            let left = std::mem::take(&mut self.left_indices);
-            let right = std::mem::take(&mut self.right_indices);
-            pool.release(left);
-            pool.release(right);
-        });
-    }
-}
-
-// OPTIMIZATION 8: Branchless partitioning
+// OPTIMIZATION 8: Truly branchless partitioning
 #[inline(always)]
 fn partition_into_optimized(
     indices: &[usize],
@@ -473,19 +561,29 @@ fn partition_into_optimized(
 
     let feature_values = transposed_data.get_feature_values(feature_idx);
 
-    // Pre-allocate exact capacity
-    let estimated_left = indices.len() / 2;
-    left_out.reserve(estimated_left);
-    right_out.reserve(estimated_left);
+    left_out.reserve(indices.len());
+    right_out.reserve(indices.len());
 
-    // Branchless partitioning (compiler can vectorize better)
-    for &i in indices {
-        let goes_left = feature_values[i] <= threshold;
-        if goes_left {
-            left_out.push(i);
-        } else {
-            right_out.push(i);
+    let left_ptr = left_out.as_mut_ptr();
+    let right_ptr = right_out.as_mut_ptr();
+    let mut n_left = 0usize;
+    let mut n_right = 0usize;
+
+    unsafe {
+        for &i in indices {
+            let val = *feature_values.get_unchecked(i);
+            let goes_left = (val <= threshold) as usize;
+            let goes_right = goes_left ^ 1;
+
+            *left_ptr.add(n_left) = i;
+            *right_ptr.add(n_right) = i;
+
+            n_left += goes_left;
+            n_right += goes_right;
         }
+
+        left_out.set_len(n_left);
+        right_out.set_len(n_right);
     }
 }
 
@@ -766,13 +864,17 @@ mod tests {
         let n = 60_000;
         let nf = 6;
         let n_bins = 17;
-        let binned = Array2::from_shape_fn((n, nf), |(i, j)| ((i * 31 + j * 7) % (n_bins + 3)) as i16);
+        let binned =
+            Array2::from_shape_fn((n, nf), |(i, j)| ((i * 31 + j * 7) % (n_bins + 3)) as i16);
         let t = TransposedData::from_binned(binned);
         let g = Array1::from_shape_fn(n, |i| i as f64 * 0.001 + 0.25);
         let h = Array1::from_shape_fn(n, |i| 1.0 + (i % 97) as f64 * 0.01);
         let y = Array1::from_shape_fn(n, |i| ((i * 13) % 2) as f64);
         let feats: Vec<usize> = (0..nf).collect();
-        let params = TreeParams { n_bins_per_feature: vec![n_bins; nf], ..Default::default() };
+        let params = TreeParams {
+            n_bins_per_feature: vec![n_bins; nf],
+            ..Default::default()
+        };
 
         // sparse (ordered path, 25k > GATHER_CHUNK*3) and dense (per-feature path)
         let sparse: Vec<usize> = (0..n).filter(|i| i % 12 < 5).collect();
@@ -780,14 +882,18 @@ mod tests {
         assert!(sparse.len() * 2 < n && sparse.len() >= 10_000);
         assert!(dense.len() * 2 >= n);
 
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
         for idx in [&sparse, &dense] {
             let got = pool.install(|| {
                 build_hists_optimized(&feats, &t, &y.view(), &g.view(), &h.view(), idx, &params)
             });
             assert_eq!(got.len(), nf);
             for (f, got_f) in got.iter().enumerate() {
-                let want = t.build_histogram_vectorized(f, idx, &g.view(), &h.view(), &y.view(), n_bins);
+                let want =
+                    t.build_histogram_vectorized(f, idx, &g.view(), &h.view(), &y.view(), n_bins);
                 assert_eq!(got_f.grad, want.grad, "grad f={f} len={}", idx.len());
                 assert_eq!(got_f.hess, want.hess, "hess f={f}");
                 assert_eq!(got_f.y, want.y, "y f={f}");
@@ -796,4 +902,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_fit_optimized_with_predictions_matches_predict_batch() {
+        use ndarray::Array2;
+        let n = 200;
+        let nf = 4;
+        let n_bins = 8;
+        let binned = Array2::from_shape_fn((n, nf), |(i, j)| ((i * 7 + j * 3) % n_bins) as i16);
+        let t = TransposedData::from_binned(binned);
+        let g: Vec<f64> = (0..n).map(|i| (i as f64) * 0.01 - 1.0).collect();
+        let h: Vec<f64> = (0..n).map(|_| 1.0).collect();
+        let y: Vec<f64> = (0..n).map(|i| (i % 2) as f64).collect();
+        let feats: Vec<usize> = (0..nf).collect();
+        let params = TreeParams {
+            min_samples_split: 5,
+            min_child_weight: 1.0,
+            reg_lambda: 1.0,
+            n_bins_per_feature: vec![n_bins; nf],
+            ..Default::default()
+        };
+
+        // Test with 80% subsample (both in-bag and out-of-bag)
+        let sample_indices: Vec<usize> = (0..n).filter(|i| i % 5 != 0).collect();
+        let mut tree = OptimizedTreeShannon::new(4);
+        let mut tree_preds = vec![0.0f64; n];
+
+        tree.fit_optimized_with_predictions(
+            &t,
+            &y,
+            &g,
+            &h,
+            &sample_indices,
+            &feats,
+            &params,
+            &mut tree_preds,
+        );
+
+        let all_indices: Vec<usize> = (0..n).collect();
+        let batch_preds = tree.predict_batch(&t, &all_indices);
+
+        for i in 0..n {
+            assert!(
+                (tree_preds[i] - batch_preds[i]).abs() < 1e-10,
+                "Mismatch at index {}: tree_pred = {}, batch_pred = {}",
+                i,
+                tree_preds[i],
+                batch_preds[i]
+            );
+        }
+    }
 }

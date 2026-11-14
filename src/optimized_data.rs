@@ -156,8 +156,7 @@ impl TransposedData {
                     let row = &rows[sample_idx];
                     for feature_idx in feature_block_start..feature_block_end {
                         if feature_idx < row.len() {
-                            features[[feature_idx, sample_idx]] =
-                                saturate_bin(row[feature_idx]);
+                            features[[feature_idx, sample_idx]] = saturate_bin(row[feature_idx]);
                         }
                     }
                 }
@@ -580,7 +579,14 @@ mod tests {
         let t = TransposedData::from_binned(array![[-1i16], [7], [1], [-5]]);
         let g = array![1.0, 10.0, 100.0, 1000.0];
         let ones = Array1::<f64>::ones(4);
-        let hist = t.build_histogram_vectorized(0, &[0, 1, 2, 3], &g.view(), &ones.view(), &ones.view(), 3);
+        let hist = t.build_histogram_vectorized(
+            0,
+            &[0, 1, 2, 3],
+            &g.view(),
+            &ones.view(),
+            &ones.view(),
+            3,
+        );
         assert_eq!(hist.grad.to_vec(), vec![1001.0, 100.0, 10.0]);
         assert_eq!(hist.count.to_vec(), vec![2.0, 1.0, 1.0]);
     }
@@ -654,9 +660,16 @@ mod tests {
                 }
                 let good = full();
                 let r = std::panic::catch_unwind(|| {
-                    if side == 0 { bad.subtract(&good) } else { good.subtract(&bad) }
+                    if side == 0 {
+                        bad.subtract(&good)
+                    } else {
+                        good.subtract(&bad)
+                    }
                 });
-                assert!(r.is_err(), "mismatch side={side} field={field} was accepted");
+                assert!(
+                    r.is_err(),
+                    "mismatch side={side} field={field} was accepted"
+                );
             }
         }
     }
@@ -664,23 +677,58 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn from_rows_normalizes_like_other_constructors() {
-        let rows = vec![vec![-1, 3], vec![i32::MIN, 40_000], vec![2, i16::MAX as i32]];
+        let rows = vec![
+            vec![-1, 3],
+            vec![i32::MIN, 40_000],
+            vec![2, i16::MAX as i32],
+        ];
         let t = TransposedData::from_rows(&rows);
         assert_eq!(t.features, array![[0i16, 0, 2], [3, i16::MAX, i16::MAX]]);
         let from_binned = TransposedData::from_binned(array![[-1i16, 3], [i16::MIN, 0], [2, 0]]);
         assert_eq!(t.features.row(0), from_binned.features.row(0));
         // negative -> bin 0, saturated -> last bin
         let ones = Array1::<f64>::ones(3);
-        let h0 = t.build_histogram_vectorized(0, &[0, 1, 2], &ones.view(), &ones.view(), &ones.view(), 3);
+        let h0 = t.build_histogram_vectorized(
+            0,
+            &[0, 1, 2],
+            &ones.view(),
+            &ones.view(),
+            &ones.view(),
+            3,
+        );
         assert_eq!(h0.count.to_vec(), vec![2.0, 0.0, 1.0]);
-        let h1 = t.build_histogram_vectorized(1, &[0, 1, 2], &ones.view(), &ones.view(), &ones.view(), 4);
+        let h1 = t.build_histogram_vectorized(
+            1,
+            &[0, 1, 2],
+            &ones.view(),
+            &ones.view(),
+            &ones.view(),
+            4,
+        );
         assert_eq!(h1.count.to_vec(), vec![0.0, 0.0, 0.0, 3.0]);
     }
 
-    fn random_case(n: usize, nb: usize, seed: u64) -> (TransposedData, Array1<f64>, Array1<f64>, Array1<f64>, Vec<usize>) {
+    fn random_case(
+        n: usize,
+        nb: usize,
+        seed: u64,
+    ) -> (
+        TransposedData,
+        Array1<f64>,
+        Array1<f64>,
+        Array1<f64>,
+        Vec<usize>,
+    ) {
         let mut s = seed;
-        let mut next = move || { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (s >> 33) as usize };
-        let t = TransposedData::from_binned(Array2::from_shape_fn((n, 3), |_| (next() % (nb + 2)) as i16));
+        let mut next = move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (s >> 33) as usize
+        };
+        let t = TransposedData::from_binned(Array2::from_shape_fn((n, 3), |_| {
+            (next() % (nb + 2)) as i16
+        }));
         let g = Array1::from_shape_fn(n, |_| (next() % 1000) as f64 / 7.0 - 50.0);
         let h = Array1::from_shape_fn(n, |_| (next() % 1000) as f64 / 13.0);
         let y = Array1::from_shape_fn(n, |_| (next() % 2) as f64);
@@ -692,7 +740,12 @@ mod tests {
     fn ordered_matches_vectorized_bit_for_bit() {
         for &(n, nb) in &[(0usize, 4usize), (5, 1), (37, 5), (1000, 32), (4099, 2)] {
             let (t, g, h, y, idx) = random_case(n, nb, n as u64 + 1);
-            let stats = gather_node_stats(&idx, g.as_slice().unwrap(), h.as_slice().unwrap(), y.as_slice().unwrap());
+            let stats = gather_node_stats(
+                &idx,
+                g.as_slice().unwrap(),
+                h.as_slice().unwrap(),
+                y.as_slice().unwrap(),
+            );
             for f in 0..3 {
                 let a = t.build_histogram_vectorized(f, &idx, &g.view(), &h.view(), &y.view(), nb);
                 let b = t.build_histogram_ordered(f, &idx, &stats, nb);
@@ -707,18 +760,35 @@ mod tests {
     #[test]
     fn ordered_rejects_bad_inputs() {
         let (t, g, h, y, idx) = random_case(50, 4, 9);
-        let stats = gather_node_stats(&idx, g.as_slice().unwrap(), h.as_slice().unwrap(), y.as_slice().unwrap());
-        assert!(std::panic::catch_unwind(|| t.build_histogram_ordered(3, &idx, &stats, 4)).is_err());
-        assert!(std::panic::catch_unwind(|| t.build_histogram_ordered(0, &idx[1..], &stats, 4)).is_err());
+        let stats = gather_node_stats(
+            &idx,
+            g.as_slice().unwrap(),
+            h.as_slice().unwrap(),
+            y.as_slice().unwrap(),
+        );
+        assert!(
+            std::panic::catch_unwind(|| t.build_histogram_ordered(3, &idx, &stats, 4)).is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| t.build_histogram_ordered(0, &idx[1..], &stats, 4))
+                .is_err()
+        );
         for pos in [2usize, idx.len() - 1] {
             let mut bad = idx.clone();
             bad[pos] = 50;
-            assert!(std::panic::catch_unwind(|| t.build_histogram_ordered(0, &bad, &stats, 4)).is_err());
+            assert!(
+                std::panic::catch_unwind(|| t.build_histogram_ordered(0, &bad, &stats, 4)).is_err()
+            );
         }
         // gather itself is bounds-checked
-        assert!(std::panic::catch_unwind(|| gather_node_stats(&[50], g.as_slice().unwrap(), h.as_slice().unwrap(), y.as_slice().unwrap())).is_err());
+        assert!(std::panic::catch_unwind(|| gather_node_stats(
+            &[50],
+            g.as_slice().unwrap(),
+            h.as_slice().unwrap(),
+            y.as_slice().unwrap()
+        ))
+        .is_err());
     }
-
 
     /// Distinct, position-dependent values so any misplaced element is caught.
     fn distinct_inputs(n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
@@ -755,7 +825,9 @@ mod tests {
     }
 
     pub(crate) fn pool(threads: usize) -> rayon::ThreadPool {
-        rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
     }
-
 }

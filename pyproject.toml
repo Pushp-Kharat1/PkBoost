@@ -33,6 +33,4 @@ Repository = "https://github.com/Pushp-Kharat1/pkboost"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-python-source = "."
-
 include = ["pkboost_sklearn/**/*.py"]

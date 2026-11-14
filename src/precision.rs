@@ -21,43 +21,77 @@ pub trait ProgressivePrecision: Sized {
 }
 
 impl ProgressivePrecision for f16 {
-    fn from_f64(val: f64) -> Self { f16::from_f64(val) }
-    fn to_f64(&self) -> f64 { f16::to_f64(*self) }
-    fn precision_level() -> PrecisionLevel { PrecisionLevel::F16 }
+    fn from_f64(val: f64) -> Self {
+        f16::from_f64(val)
+    }
+    fn to_f64(&self) -> f64 {
+        f16::to_f64(*self)
+    }
+    fn precision_level() -> PrecisionLevel {
+        PrecisionLevel::F16
+    }
     fn should_promote(&self) -> bool {
         let val = self.to_f32().abs();
         val > OVERFLOW_THRESHOLD_F16 || (val > 0.0 && val < UNDERFLOW_THRESHOLD)
     }
-    fn promote<T: ProgressivePrecision>(&self) -> T { T::from_f64(f16::to_f64(*self)) }
+    fn promote<T: ProgressivePrecision>(&self) -> T {
+        T::from_f64(f16::to_f64(*self))
+    }
 }
 
 impl ProgressivePrecision for bf16 {
-    fn from_f64(val: f64) -> Self { bf16::from_f64(val) }
-    fn to_f64(&self) -> f64 { bf16::to_f64(*self) }
-    fn precision_level() -> PrecisionLevel { PrecisionLevel::BF16 }
+    fn from_f64(val: f64) -> Self {
+        bf16::from_f64(val)
+    }
+    fn to_f64(&self) -> f64 {
+        bf16::to_f64(*self)
+    }
+    fn precision_level() -> PrecisionLevel {
+        PrecisionLevel::BF16
+    }
     fn should_promote(&self) -> bool {
         let val = self.to_f32().abs();
         val > 1e10 || (val > 0.0 && val < UNDERFLOW_THRESHOLD)
     }
-    fn promote<T: ProgressivePrecision>(&self) -> T { T::from_f64(bf16::to_f64(*self)) }
+    fn promote<T: ProgressivePrecision>(&self) -> T {
+        T::from_f64(bf16::to_f64(*self))
+    }
 }
 
 impl ProgressivePrecision for f32 {
-    fn from_f64(val: f64) -> Self { val as f32 }
-    fn to_f64(&self) -> f64 { *self as f64 }
-    fn precision_level() -> PrecisionLevel { PrecisionLevel::F32 }
+    fn from_f64(val: f64) -> Self {
+        val as f32
+    }
+    fn to_f64(&self) -> f64 {
+        *self as f64
+    }
+    fn precision_level() -> PrecisionLevel {
+        PrecisionLevel::F32
+    }
     fn should_promote(&self) -> bool {
         !self.is_finite() || self.abs() > 1e30
     }
-    fn promote<T: ProgressivePrecision>(&self) -> T { T::from_f64(self.to_f64()) }
+    fn promote<T: ProgressivePrecision>(&self) -> T {
+        T::from_f64(self.to_f64())
+    }
 }
 
 impl ProgressivePrecision for f64 {
-    fn from_f64(val: f64) -> Self { val }
-    fn to_f64(&self) -> f64 { *self }
-    fn precision_level() -> PrecisionLevel { PrecisionLevel::F64 }
-    fn should_promote(&self) -> bool { false }
-    fn promote<T: ProgressivePrecision>(&self) -> T { T::from_f64(*self) }
+    fn from_f64(val: f64) -> Self {
+        val
+    }
+    fn to_f64(&self) -> f64 {
+        *self
+    }
+    fn precision_level() -> PrecisionLevel {
+        PrecisionLevel::F64
+    }
+    fn should_promote(&self) -> bool {
+        false
+    }
+    fn promote<T: ProgressivePrecision>(&self) -> T {
+        T::from_f64(*self)
+    }
 }
 
 pub struct AdaptiveCompute;
@@ -83,7 +117,9 @@ impl AdaptiveCompute {
 
     #[inline]
     pub fn dot_product_adaptive(a: &[f64], b: &[f64]) -> f64 {
-        let max_val = a.iter().chain(b.iter())
+        let max_val = a
+            .iter()
+            .chain(b.iter())
             .map(|x| x.abs())
             .fold(0.0f64, f64::max);
 
@@ -106,13 +142,9 @@ impl AdaptiveCompute {
         let max_grad = gradients.iter().map(|g| g.abs()).fold(0.0, f64::max);
 
         if max_grad < GRADIENT_PROMOTION_THRESHOLD {
-            gradients.iter()
-                .map(|&g| f16::from_f64(g).to_f64())
-                .sum()
+            gradients.iter().map(|&g| f16::from_f64(g).to_f64()).sum()
         } else if max_grad < 1.0 {
-            gradients.iter()
-                .map(|&g| bf16::from_f64(g).to_f64())
-                .sum()
+            gradients.iter().map(|&g| bf16::from_f64(g).to_f64()).sum()
         } else if max_grad < 1000.0 {
             gradients.iter().copied().sum()
         } else {
@@ -121,19 +153,25 @@ impl AdaptiveCompute {
     }
 
     pub fn weighted_sum_f16(values: &[f64], weights: &[f64]) -> f64 {
-        values.iter().zip(weights.iter())
+        values
+            .iter()
+            .zip(weights.iter())
             .map(|(&v, &w)| (f16::from_f64(v).to_f32() * f16::from_f64(w).to_f32()) as f64)
             .sum()
     }
 
     pub fn weighted_sum_bf16(values: &[f64], weights: &[f64]) -> f64 {
-        values.iter().zip(weights.iter())
+        values
+            .iter()
+            .zip(weights.iter())
             .map(|(&v, &w)| (bf16::from_f64(v).to_f32() * bf16::from_f64(w).to_f32()) as f64)
             .sum()
     }
 
     pub fn weighted_sum_adaptive(values: &[f64], weights: &[f64]) -> f64 {
-        let max_val = values.iter().chain(weights.iter())
+        let max_val = values
+            .iter()
+            .chain(weights.iter())
             .map(|x| x.abs())
             .fold(0.0, f64::max);
 

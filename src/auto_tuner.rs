@@ -78,14 +78,6 @@ pub fn auto_tune_principled(
         _ => "standard",
     };
 
-    println!("\n=== Auto-Tuner ===");
-    println!(
-        "Dataset Profile: {} samples, {} features",
-        n_samples, n_features
-    );
-    println!("Imbalance: {:.1}% ({})", pos_ratio * 100.0, imbalance_level);
-    println!("Complexity: {}", data_complexity);
-
     // LEARNING RATE: Aggressive for fast convergence
     // Higher lr = fewer trees needed, relies on early stopping
     model.learning_rate = match data_complexity {
@@ -174,18 +166,4 @@ pub fn auto_tune_principled(
 
     // HISTOGRAM BINS: 16 is 2x faster than 32 with minimal accuracy loss
     model.histogram_bins = 32;
-
-    println!("\nDerived Parameters:");
-    println!("• Learning Rate: {:.4}", model.learning_rate);
-    println!("• Max Depth: {}", model.max_depth);
-    println!(
-        "• Estimators: {} (early stop @ {})",
-        model.n_estimators, model.early_stopping_rounds
-    );
-    println!("• Col Sample: {:.2}", model.colsample_bytree);
-    println!("• Reg Lambda: {:.2}", model.reg_lambda);
-    println!("• Min Child Weight: {:.1}", model.min_child_weight);
-    println!("• Gamma: {:.1}", model.gamma);
-    println!("• MI Weight: {:.1}", model.mi_weight);
-    println!();
 }
