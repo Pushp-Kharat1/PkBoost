@@ -20,8 +20,46 @@ impl OptimizedShannonLoss {
         (pos / neg.max(1.0)).ln()
     }
 
-    /// OPTIMIZED: Fused gradient and hessian calculation
-    /// Computes both in a single pass, avoiding redundant sigmoid calculations
+    /// OPTIMIZED: In-place gradient and hessian calculation
+    /// Computes both in a single pass into pre-allocated slices without any intermediate allocations
+    #[inline]
+    pub fn compute_gradient_hessian_into(
+        &self,
+        y_true: &[f64],
+        y_pred: &[f64],
+        scale_pos_weight: f64,
+        grad_out: &mut [f64],
+        hess_out: &mut [f64],
+    ) {
+        let n = y_true.len();
+        if n >= PARALLEL_THRESHOLD {
+            grad_out
+                .par_iter_mut()
+                .zip(hess_out.par_iter_mut())
+                .zip(y_pred.par_iter())
+                .zip(y_true.par_iter())
+                .for_each(|(((g, h), &pred), &true_y)| {
+                    let prob = 1.0 / (1.0 + (-pred).exp());
+                    let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
+                    *g = weight * (prob - true_y);
+                    *h = weight * prob * (1.0 - prob).max(1e-6);
+                });
+        } else {
+            for (((g, h), &pred), &true_y) in grad_out
+                .iter_mut()
+                .zip(hess_out.iter_mut())
+                .zip(y_pred.iter())
+                .zip(y_true.iter())
+            {
+                let prob = 1.0 / (1.0 + (-pred).exp());
+                let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
+                *g = weight * (prob - true_y);
+                *h = weight * prob * (1.0 - prob).max(1e-6);
+            }
+        }
+    }
+
+    /// Fused gradient and hessian calculation (allocating convenience wrapper)
     #[inline]
     pub fn gradient_hessian(
         &self,
@@ -30,41 +68,10 @@ impl OptimizedShannonLoss {
         scale_pos_weight: f64,
     ) -> (Vec<f64>, Vec<f64>) {
         let n = y_true.len();
-
-        if n >= PARALLEL_THRESHOLD {
-            // Parallel path for large arrays
-            let results: Vec<(f64, f64)> = y_pred
-                .par_iter()
-                .zip(y_true.par_iter())
-                .map(|(&pred, &true_y)| {
-                    let prob = 1.0 / (1.0 + (-pred).exp());
-                    let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
-                    let grad = weight * (prob - true_y);
-                    let hess = weight * prob * (1.0 - prob).max(1e-6);
-                    (grad, hess)
-                })
-                .collect();
-
-            let mut grad = Vec::with_capacity(n);
-            let mut hess = Vec::with_capacity(n);
-            for (g, h) in results {
-                grad.push(g);
-                hess.push(h);
-            }
-            (grad, hess)
-        } else {
-            // Sequential path for small arrays - avoids Rayon overhead
-            let mut grad = Vec::with_capacity(n);
-            let mut hess = Vec::with_capacity(n);
-
-            for (&pred, &true_y) in y_pred.iter().zip(y_true.iter()) {
-                let prob = 1.0 / (1.0 + (-pred).exp());
-                let weight = if true_y > 0.5 { scale_pos_weight } else { 1.0 };
-                grad.push(weight * (prob - true_y));
-                hess.push(weight * prob * (1.0 - prob).max(1e-6));
-            }
-            (grad, hess)
-        }
+        let mut grad = vec![0.0f64; n];
+        let mut hess = vec![0.0f64; n];
+        self.compute_gradient_hessian_into(y_true, y_pred, scale_pos_weight, &mut grad, &mut hess);
+        (grad, hess)
     }
 
     /// Legacy: separate gradient (for backward compatibility)

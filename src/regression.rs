@@ -5,11 +5,10 @@ use crate::{
     histogram_builder::OptimizedHistogramBuilder,
     huber_loss::HuberLoss,
     loss::PoissonLoss,
-    optimized_data::TransposedData,
     tree::{OptimizedTreeShannon, TreeParams},
 };
 use ndarray::{Array1, ArrayView1, ArrayView2};
-use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use rayon::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
@@ -170,6 +169,20 @@ impl PKBoostRegressor {
         }
     }
 
+    pub fn get_gradient_hessian(&self, y_true: &[f64], y_pred: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        match self.loss_type {
+            RegressionLossType::MSE => (
+                self.loss_fn.gradient(y_true, y_pred),
+                self.loss_fn.hessian(y_true),
+            ),
+            RegressionLossType::Huber { .. } => {
+                let huber = self.huber_loss.as_ref().unwrap();
+                (huber.gradient(y_true, y_pred), huber.hessian(y_true, y_pred))
+            }
+            RegressionLossType::Poisson => PoissonLoss::gradient_hessian(y_true, y_pred),
+        }
+    }
+
     /// Fit using ArrayView2 for zero-copy data transfer
     pub fn fit(
         &mut self,
@@ -195,21 +208,16 @@ impl PKBoostRegressor {
         }
 
         let hb = self.histogram_builder.as_ref().unwrap();
-        let x_proc = hb.transform(x);
-        let transposed = TransposedData::from_binned(x_proc);
+        let transposed = hb.transform_transposed_u8(x);
 
-        let (x_val_proc, mut val_preds) = if let Some((xv, yv)) = eval_set {
+        let (val_trans, mut val_preds) = if let Some((xv, yv)) = eval_set {
             (
-                Some(hb.transform(xv)),
+                Some(hb.transform_transposed_u8(xv)),
                 Some(vec![self.base_score; yv.len()]),
             )
         } else {
             (None, None)
         };
-
-        let val_trans = x_val_proc
-            .as_ref()
-            .map(|xv| TransposedData::from_binned_view(xv.view()));
 
         if verbose {
             println!("=== PKBoost Regressor Training ===");
@@ -225,10 +233,15 @@ impl PKBoostRegressor {
             let sample_size = (self.subsample * n_samples as f64) as usize;
             if sample_size < n_samples {
                 sample_indices.clear();
-                sample_indices.extend(0..n_samples);
-                sample_indices.shuffle(&mut rng);
-                sample_indices.truncate(sample_size);
-                sample_indices.sort_unstable();
+                let p = self.subsample;
+                for i in 0..n_samples {
+                    if rng.gen::<f64>() < p {
+                        sample_indices.push(i);
+                    }
+                }
+                if sample_indices.is_empty() {
+                    sample_indices.extend(0..n_samples);
+                }
             } else if sample_indices.len() != n_samples {
                 sample_indices.clear();
                 sample_indices.extend(0..n_samples);
@@ -246,8 +259,7 @@ impl PKBoostRegressor {
                 feature_indices.extend(0..n_features);
             }
 
-            let grad = self.get_gradient(y_slice, &train_preds);
-            let hess = self.get_hessian(y_slice, &train_preds);
+            let (grad, hess) = self.get_gradient_hessian(y_slice, &train_preds);
 
             let mut tree = OptimizedTreeShannon::new(self.max_depth);
             let params = TreeParams {
@@ -359,8 +371,7 @@ impl PKBoostRegressor {
         }
 
         let hb = self.histogram_builder.as_ref().unwrap();
-        let x_proc = hb.transform(x);
-        let transposed = TransposedData::from_binned(x_proc);
+        let transposed = hb.transform_transposed_u8(x);
 
         let mut preds = vec![self.base_score; transposed.n_samples];
 
@@ -387,8 +398,7 @@ impl PKBoostRegressor {
         }
 
         let hb = self.histogram_builder.as_ref().unwrap();
-        let x_proc = hb.transform(x);
-        let transposed = TransposedData::from_binned(x_proc);
+        let transposed = hb.transform_transposed_u8(x);
         let n_samples = transposed.n_samples;
 
         let mut cumulative_preds: Vec<Vec<f64>> =

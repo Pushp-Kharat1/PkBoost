@@ -1,25 +1,16 @@
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
+use ndarray::{Array2, ArrayView1, ArrayView2};
 use rayon::prelude::*;
 
 /// Map a stored bin value to a histogram slot.
-///
-/// Negative values are normalized to 0 when `TransposedData` is constructed,
-/// so the hot loop only needs a clamp to `max_bin`. Going through `u16`
-/// avoids sign extension; if a negative value is written into the public
-/// `features` field afterwards it lands in the last bin. Either way the
-/// result is always `<= max_bin`, which is what memory safety relies on.
 #[inline(always)]
-fn bin_index(value: i16, max_bin: usize) -> usize {
-    (value as u16 as usize).min(max_bin)
+fn bin_index(value: u8, max_bin: usize) -> usize {
+    (value as usize).min(max_bin)
 }
 
-/// Convert a legacy `i32` bin to the stored `i16` form with the same
-/// normalization as the other constructors: negatives become 0, and values
-/// above `i16::MAX` saturate to `i16::MAX` (which `bin_index` then clamps to
-/// the last histogram bin) instead of wrapping.
+/// Convert a legacy `i32` bin to the stored `u8` form.
 #[inline]
-fn saturate_bin(value: i32) -> i16 {
-    value.clamp(0, i16::MAX as i32) as i16
+fn saturate_bin(value: i32) -> u8 {
+    value.clamp(0, 255) as u8
 }
 
 /// Gather per-sample `[grad, hess, y, 1.0]` for one tree node, in `indices`
@@ -62,24 +53,6 @@ pub fn gather_node_stats_par(
     out
 }
 
-#[inline]
-fn split_interleaved(bins: Vec<[f64; 4]>) -> CachedHistogram {
-    let n = bins.len();
-    let (mut g, mut h, mut y, mut c) = (
-        Vec::with_capacity(n),
-        Vec::with_capacity(n),
-        Vec::with_capacity(n),
-        Vec::with_capacity(n),
-    );
-    for b in bins {
-        g.push(b[0]);
-        h.push(b[1]);
-        y.push(b[2]);
-        c.push(b[3]);
-    }
-    CachedHistogram::new(g, h, y, c)
-}
-
 #[cold]
 #[inline(never)]
 fn invalid_sample_index(idx: usize, n_samples: usize) -> ! {
@@ -88,38 +61,51 @@ fn invalid_sample_index(idx: usize, n_samples: usize) -> ! {
 
 #[derive(Debug, Clone)]
 pub struct TransposedData {
-    pub features: Array2<i16>, // Transposed: (n_features, n_samples), i16 for cache efficiency
+    pub features: Array2<u8>, // Transposed: (n_features, n_samples), u8 for cache efficiency
     pub n_samples: usize,
     pub n_features: usize,
 }
 
 impl TransposedData {
-    /// Create TransposedData from binned Array2<i16> produced by histogram_builder.
+    /// Create TransposedData from already-transposed Array2<u8> produced by histogram_builder.
+    /// Input: (n_features, n_samples). Zero copies!
+    pub fn from_binned_transposed_u8(features: Array2<u8>) -> Self {
+        let (n_features, n_samples) = features.dim();
+        Self {
+            features,
+            n_samples,
+            n_features,
+        }
+    }
+
+    /// Create TransposedData from row-major binned Array2<u8>.
     /// Input: (n_samples, n_features), Output: transposed to (n_features, n_samples).
-    /// Allocates exactly one feature-major buffer; the input is consumed.
-    pub fn from_binned(binned: Array2<i16>) -> Self {
-        // reversed_axes() is a free metadata swap on the owned array; the
-        // single copy happens in as_standard_layout(). into_owned() then moves
-        // that buffer out of the Cow instead of cloning it again.
+    pub fn from_binned_u8(binned: Array2<u8>) -> Self {
         Self::from_feature_major(binned.reversed_axes().as_standard_layout().into_owned())
     }
 
+    /// Create TransposedData from binned Array2<i16> produced by histogram_builder.
+    /// Input: (n_samples, n_features), Output: transposed to (n_features, n_samples) as u8.
+    pub fn from_binned(binned: Array2<i16>) -> Self {
+        let binned_u8 = binned.mapv(|v| v.clamp(0, 255) as u8);
+        Self::from_feature_major(binned_u8.reversed_axes().as_standard_layout().into_owned())
+    }
+
     /// Create TransposedData from binned ArrayView2<i16> (avoids extra allocation)
-    /// One allocation for the owned output; previously `.to_owned()` on the
-    /// Cow returned by `as_standard_layout()` cloned the reordered data a
-    /// second time.
     pub fn from_binned_view(binned: ArrayView2<'_, i16>) -> Self {
+        let binned_u8 = binned.map(|&v| v.clamp(0, 255) as u8);
+        Self::from_feature_major(binned_u8.t().as_standard_layout().into_owned())
+    }
+
+    /// Create TransposedData from binned ArrayView2<u8>
+    pub fn from_binned_view_u8(binned: ArrayView2<'_, u8>) -> Self {
         Self::from_feature_major(binned.t().as_standard_layout().into_owned())
     }
 
     /// `features` is already (n_features, n_samples) in standard layout.
     /// Empty inputs keep their real dimensions, e.g. (n_features, 0).
-    fn from_feature_major(mut features: Array2<i16>) -> Self {
+    fn from_feature_major(features: Array2<u8>) -> Self {
         debug_assert!(features.is_standard_layout());
-        // The binner never emits negatives (NaNs are median-imputed), but
-        // normalize defensively so a stray negative counts as bin 0. This runs
-        // once per dataset instead of once per sample per histogram.
-        features.mapv_inplace(|v| v.max(0));
         let (n_features, n_samples) = features.dim();
         Self {
             features,
@@ -129,7 +115,7 @@ impl TransposedData {
     }
 
     /// Legacy: Create from Vec<Vec<i32>> (deprecated, use from_binned instead)
-    #[deprecated(note = "Use from_binned() with Array2<i16> for zero-copy performance")]
+    #[deprecated(note = "Use from_binned() with Array2<u8> for zero-copy performance")]
     pub fn from_rows(rows: &[Vec<i32>]) -> Self {
         if rows.is_empty() {
             return Self {
@@ -170,7 +156,7 @@ impl TransposedData {
         }
     }
 
-    pub fn get_feature_values(&self, feature_idx: usize) -> &[i16] {
+    pub fn get_feature_values(&self, feature_idx: usize) -> &[u8] {
         self.features.row(feature_idx).to_slice().unwrap()
     }
 
@@ -185,7 +171,7 @@ impl TransposedData {
         n_bins: usize,
     ) -> CachedHistogram {
         if n_bins == 0 {
-            return CachedHistogram::new(vec![], vec![], vec![], vec![]);
+            return CachedHistogram::from_bins(vec![]);
         }
 
         assert!(
@@ -217,43 +203,100 @@ impl TransposedData {
         // for a bin are adjacent in memory (32 bytes) instead of spread across
         // four separate arrays. Per-bin summation order is
         // unchanged, so results are bit-identical to the old layout.
-        let mut bins = vec![[0.0f64; 4]; n_bins];
+        let mut bins_0 = vec![[0.0f64; 4]; n_bins];
+        let mut bins_1 = vec![[0.0f64; 4]; n_bins];
         let n_samples = self.n_samples;
 
-        // 8x unrolled. Index validation is fused into the loop (one
-        // predictable branch per 8 samples) instead of a separate pass.
+        // 8x unrolled with dual sub-accumulators (bins_0 and bins_1) to eliminate
+        // Read-After-Write (RAW) pipeline dependency stalls on identical bins.
         let mut chunks = indices.chunks_exact(8);
         for chunk in &mut chunks {
             let max_idx = chunk.iter().copied().fold(0, usize::max);
             if max_idx >= n_samples {
                 invalid_sample_index(max_idx, n_samples);
             }
-            for &idx in chunk {
-                // SAFETY: idx < n_samples, and feature_values, grad, hess and
-                // y all have at least n_samples elements (asserted above).
-                // bin_index() always returns <= max_bin < bins.len().
-                unsafe {
-                    let bin = bin_index(*feature_values.get_unchecked(idx), max_bin);
-                    let e = bins.get_unchecked_mut(bin);
-                    e[0] += *grad_slice.get_unchecked(idx);
-                    e[1] += *hess_slice.get_unchecked(idx);
-                    e[2] += *y_slice.get_unchecked(idx);
-                    e[3] += 1.0;
-                }
+            unsafe {
+                let idx0 = *chunk.get_unchecked(0);
+                let idx1 = *chunk.get_unchecked(1);
+                let bin0 = bin_index(*feature_values.get_unchecked(idx0), max_bin);
+                let bin1 = bin_index(*feature_values.get_unchecked(idx1), max_bin);
+                let e0 = bins_0.get_unchecked_mut(bin0);
+                let e1 = bins_1.get_unchecked_mut(bin1);
+                e0[0] += *grad_slice.get_unchecked(idx0);
+                e0[1] += *hess_slice.get_unchecked(idx0);
+                e0[2] += *y_slice.get_unchecked(idx0);
+                e0[3] += 1.0;
+                e1[0] += *grad_slice.get_unchecked(idx1);
+                e1[1] += *hess_slice.get_unchecked(idx1);
+                e1[2] += *y_slice.get_unchecked(idx1);
+                e1[3] += 1.0;
+
+                let idx2 = *chunk.get_unchecked(2);
+                let idx3 = *chunk.get_unchecked(3);
+                let bin2 = bin_index(*feature_values.get_unchecked(idx2), max_bin);
+                let bin3 = bin_index(*feature_values.get_unchecked(idx3), max_bin);
+                let e2 = bins_0.get_unchecked_mut(bin2);
+                let e3 = bins_1.get_unchecked_mut(bin3);
+                e2[0] += *grad_slice.get_unchecked(idx2);
+                e2[1] += *hess_slice.get_unchecked(idx2);
+                e2[2] += *y_slice.get_unchecked(idx2);
+                e2[3] += 1.0;
+                e3[0] += *grad_slice.get_unchecked(idx3);
+                e3[1] += *hess_slice.get_unchecked(idx3);
+                e3[2] += *y_slice.get_unchecked(idx3);
+                e3[3] += 1.0;
+
+                let idx4 = *chunk.get_unchecked(4);
+                let idx5 = *chunk.get_unchecked(5);
+                let bin4 = bin_index(*feature_values.get_unchecked(idx4), max_bin);
+                let bin5 = bin_index(*feature_values.get_unchecked(idx5), max_bin);
+                let e4 = bins_0.get_unchecked_mut(bin4);
+                let e5 = bins_1.get_unchecked_mut(bin5);
+                e4[0] += *grad_slice.get_unchecked(idx4);
+                e4[1] += *hess_slice.get_unchecked(idx4);
+                e4[2] += *y_slice.get_unchecked(idx4);
+                e4[3] += 1.0;
+                e5[0] += *grad_slice.get_unchecked(idx5);
+                e5[1] += *hess_slice.get_unchecked(idx5);
+                e5[2] += *y_slice.get_unchecked(idx5);
+                e5[3] += 1.0;
+
+                let idx6 = *chunk.get_unchecked(6);
+                let idx7 = *chunk.get_unchecked(7);
+                let bin6 = bin_index(*feature_values.get_unchecked(idx6), max_bin);
+                let bin7 = bin_index(*feature_values.get_unchecked(idx7), max_bin);
+                let e6 = bins_0.get_unchecked_mut(bin6);
+                let e7 = bins_1.get_unchecked_mut(bin7);
+                e6[0] += *grad_slice.get_unchecked(idx6);
+                e6[1] += *hess_slice.get_unchecked(idx6);
+                e6[2] += *y_slice.get_unchecked(idx6);
+                e6[3] += 1.0;
+                e7[0] += *grad_slice.get_unchecked(idx7);
+                e7[1] += *hess_slice.get_unchecked(idx7);
+                e7[2] += *y_slice.get_unchecked(idx7);
+                e7[3] += 1.0;
             }
         }
         for &idx in chunks.remainder() {
             if idx >= n_samples {
                 invalid_sample_index(idx, n_samples);
             }
-            let e = &mut bins[bin_index(feature_values[idx], max_bin)];
+            let e = &mut bins_0[bin_index(feature_values[idx], max_bin)];
             e[0] += grad_slice[idx];
             e[1] += hess_slice[idx];
             e[2] += y_slice[idx];
             e[3] += 1.0;
         }
 
-        split_interleaved(bins)
+        // Merge sub-accumulators (only n_bins operations)
+        for i in 0..n_bins {
+            bins_0[i][0] += bins_1[i][0];
+            bins_0[i][1] += bins_1[i][1];
+            bins_0[i][2] += bins_1[i][2];
+            bins_0[i][3] += bins_1[i][3];
+        }
+
+        CachedHistogram::from_bins(bins_0)
     }
 
     /// Build one feature's histogram from stats pre-gathered by
@@ -269,7 +312,7 @@ impl TransposedData {
         n_bins: usize,
     ) -> CachedHistogram {
         if n_bins == 0 {
-            return CachedHistogram::new(vec![], vec![], vec![], vec![]);
+            return CachedHistogram::from_bins(vec![]);
         }
         assert!(
             feature_idx < self.n_features,
@@ -286,7 +329,8 @@ impl TransposedData {
         assert_eq!(feature_values.len(), self.n_samples);
         let n_samples = self.n_samples;
         let max_bin = n_bins - 1;
-        let mut bins = vec![[0.0f64; 4]; n_bins];
+        let mut bins_0 = vec![[0.0f64; 4]; n_bins];
+        let mut bins_1 = vec![[0.0f64; 4]; n_bins];
 
         let mut idx_chunks = indices.chunks_exact(8);
         let mut stat_chunks = stats.chunks_exact(8);
@@ -295,69 +339,136 @@ impl TransposedData {
             if max_idx >= n_samples {
                 invalid_sample_index(max_idx, n_samples);
             }
-            for (&idx, st) in ic.iter().zip(sc) {
-                // SAFETY: idx < n_samples == feature_values.len(), and
-                // bin_index() always returns <= max_bin < bins.len().
-                unsafe {
-                    let bin = bin_index(*feature_values.get_unchecked(idx), max_bin);
-                    let e = bins.get_unchecked_mut(bin);
-                    e[0] += st[0];
-                    e[1] += st[1];
-                    e[2] += st[2];
-                    e[3] += st[3];
-                }
+            unsafe {
+                let idx0 = *ic.get_unchecked(0);
+                let idx1 = *ic.get_unchecked(1);
+                let bin0 = bin_index(*feature_values.get_unchecked(idx0), max_bin);
+                let bin1 = bin_index(*feature_values.get_unchecked(idx1), max_bin);
+                let st0 = sc.get_unchecked(0);
+                let st1 = sc.get_unchecked(1);
+                let e0 = bins_0.get_unchecked_mut(bin0);
+                let e1 = bins_1.get_unchecked_mut(bin1);
+                e0[0] += st0[0];
+                e0[1] += st0[1];
+                e0[2] += st0[2];
+                e0[3] += st0[3];
+                e1[0] += st1[0];
+                e1[1] += st1[1];
+                e1[2] += st1[2];
+                e1[3] += st1[3];
+
+                let idx2 = *ic.get_unchecked(2);
+                let idx3 = *ic.get_unchecked(3);
+                let bin2 = bin_index(*feature_values.get_unchecked(idx2), max_bin);
+                let bin3 = bin_index(*feature_values.get_unchecked(idx3), max_bin);
+                let st2 = sc.get_unchecked(2);
+                let st3 = sc.get_unchecked(3);
+                let e2 = bins_0.get_unchecked_mut(bin2);
+                let e3 = bins_1.get_unchecked_mut(bin3);
+                e2[0] += st2[0];
+                e2[1] += st2[1];
+                e2[2] += st2[2];
+                e2[3] += st2[3];
+                e3[0] += st3[0];
+                e3[1] += st3[1];
+                e3[2] += st3[2];
+                e3[3] += st3[3];
+
+                let idx4 = *ic.get_unchecked(4);
+                let idx5 = *ic.get_unchecked(5);
+                let bin4 = bin_index(*feature_values.get_unchecked(idx4), max_bin);
+                let bin5 = bin_index(*feature_values.get_unchecked(idx5), max_bin);
+                let st4 = sc.get_unchecked(4);
+                let st5 = sc.get_unchecked(5);
+                let e4 = bins_0.get_unchecked_mut(bin4);
+                let e5 = bins_1.get_unchecked_mut(bin5);
+                e4[0] += st4[0];
+                e4[1] += st4[1];
+                e4[2] += st4[2];
+                e4[3] += st4[3];
+                e5[0] += st5[0];
+                e5[1] += st5[1];
+                e5[2] += st5[2];
+                e5[3] += st5[3];
+
+                let idx6 = *ic.get_unchecked(6);
+                let idx7 = *ic.get_unchecked(7);
+                let bin6 = bin_index(*feature_values.get_unchecked(idx6), max_bin);
+                let bin7 = bin_index(*feature_values.get_unchecked(idx7), max_bin);
+                let st6 = sc.get_unchecked(6);
+                let st7 = sc.get_unchecked(7);
+                let e6 = bins_0.get_unchecked_mut(bin6);
+                let e7 = bins_1.get_unchecked_mut(bin7);
+                e6[0] += st6[0];
+                e6[1] += st6[1];
+                e6[2] += st6[2];
+                e6[3] += st6[3];
+                e7[0] += st7[0];
+                e7[1] += st7[1];
+                e7[2] += st7[2];
+                e7[3] += st7[3];
             }
         }
         for (&idx, st) in idx_chunks.remainder().iter().zip(stat_chunks.remainder()) {
             if idx >= n_samples {
                 invalid_sample_index(idx, n_samples);
             }
-            let e = &mut bins[bin_index(feature_values[idx], max_bin)];
+            let e = &mut bins_0[bin_index(feature_values[idx], max_bin)];
             e[0] += st[0];
             e[1] += st[1];
             e[2] += st[2];
             e[3] += st[3];
         }
 
-        split_interleaved(bins)
+        // Merge sub-accumulators (only n_bins operations)
+        for i in 0..n_bins {
+            bins_0[i][0] += bins_1[i][0];
+            bins_0[i][1] += bins_1[i][1];
+            bins_0[i][2] += bins_1[i][2];
+            bins_0[i][3] += bins_1[i][3];
+        }
+
+        CachedHistogram::from_bins(bins_0)
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CachedHistogram {
-    pub grad: Array1<f64>,
-    pub hess: Array1<f64>,
-    pub y: Array1<f64>,
-    pub count: Array1<f64>,
+    pub bins: Vec<[f64; 4]>,
 }
 
 impl CachedHistogram {
     pub fn new(grad: Vec<f64>, hess: Vec<f64>, y: Vec<f64>, count: Vec<f64>) -> Self {
-        Self {
-            grad: Array1::from(grad),
-            hess: Array1::from(hess),
-            y: Array1::from(y),
-            count: Array1::from(count),
+        let n = grad.len();
+        assert!(
+            hess.len() == n && y.len() == n && count.len() == n,
+            "histogram length mismatch in CachedHistogram::new"
+        );
+        let mut bins = Vec::with_capacity(n);
+        for i in 0..n {
+            bins.push([grad[i], hess[i], y[i], count[i]]);
         }
+        Self { bins }
     }
 
-    #[inline]
+    #[inline(always)]
+    pub fn from_bins(bins: Vec<[f64; 4]>) -> Self {
+        Self { bins }
+    }
+
+    #[inline(always)]
     pub fn len(&self) -> usize {
-        self.grad.len()
+        self.bins.len()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.grad.is_empty()
+        self.bins.is_empty()
     }
 
-    pub fn as_slices(&self) -> (&[f64], &[f64], &[f64], &[f64]) {
-        (
-            self.grad.as_slice().unwrap(),
-            self.hess.as_slice().unwrap(),
-            self.y.as_slice().unwrap(),
-            self.count.as_slice().unwrap(),
-        )
+    #[inline(always)]
+    pub fn as_bins(&self) -> &[[f64; 4]] {
+        &self.bins
     }
 
     pub fn build_vectorized(
@@ -372,106 +483,36 @@ impl CachedHistogram {
         transposed_data.build_histogram_vectorized(feature_idx, indices, grad, hess, y, n_bins)
     }
 
-    /// Fast subtraction using unsafe array access (parent - sibling = other_child)
+    /// Fast subtraction (parent - sibling = other_child)
+    /// Operates on contiguous [f64; 4] bins (vectorized with AVX-256).
     #[inline]
     pub fn subtract(&self, other: &Self) -> Self {
-        let n = self.grad.len();
-        let mut grad_out = vec![0.0; n];
-        let mut hess_out = vec![0.0; n];
-        let mut y_out = vec![0.0; n];
-        let mut count_out = vec![0.0; n];
+        let n = self.bins.len();
+        assert_eq!(n, other.bins.len(), "histogram length mismatch in subtract");
 
-        let grad_self = self.grad.as_slice().unwrap();
-        let hess_self = self.hess.as_slice().unwrap();
-        let y_self = self.y.as_slice().unwrap();
-        let count_self = self.count.as_slice().unwrap();
+        let mut out = vec![[0.0f64; 4]; n];
+        let self_slice = &self.bins;
+        let other_slice = &other.bins;
 
-        let grad_other = other.grad.as_slice().unwrap();
-        let hess_other = other.hess.as_slice().unwrap();
-        let y_other = other.y.as_slice().unwrap();
-        let count_other = other.count.as_slice().unwrap();
-
-        // Required for the unchecked indexing below to be sound.
-        assert!(
-            hess_self.len() == n
-                && y_self.len() == n
-                && count_self.len() == n
-                && grad_other.len() == n
-                && hess_other.len() == n
-                && y_other.len() == n
-                && count_other.len() == n,
-            "histogram length mismatch in subtract"
-        );
-
-        // 4x unrolled subtraction with unsafe access
-        let mut i = 0;
-        while i + 4 <= n {
-            unsafe {
-                *grad_out.get_unchecked_mut(i) =
-                    *grad_self.get_unchecked(i) - *grad_other.get_unchecked(i);
-                *hess_out.get_unchecked_mut(i) =
-                    *hess_self.get_unchecked(i) - *hess_other.get_unchecked(i);
-                *y_out.get_unchecked_mut(i) = *y_self.get_unchecked(i) - *y_other.get_unchecked(i);
-                *count_out.get_unchecked_mut(i) =
-                    *count_self.get_unchecked(i) - *count_other.get_unchecked(i);
-
-                *grad_out.get_unchecked_mut(i + 1) =
-                    *grad_self.get_unchecked(i + 1) - *grad_other.get_unchecked(i + 1);
-                *hess_out.get_unchecked_mut(i + 1) =
-                    *hess_self.get_unchecked(i + 1) - *hess_other.get_unchecked(i + 1);
-                *y_out.get_unchecked_mut(i + 1) =
-                    *y_self.get_unchecked(i + 1) - *y_other.get_unchecked(i + 1);
-                *count_out.get_unchecked_mut(i + 1) =
-                    *count_self.get_unchecked(i + 1) - *count_other.get_unchecked(i + 1);
-
-                *grad_out.get_unchecked_mut(i + 2) =
-                    *grad_self.get_unchecked(i + 2) - *grad_other.get_unchecked(i + 2);
-                *hess_out.get_unchecked_mut(i + 2) =
-                    *hess_self.get_unchecked(i + 2) - *hess_other.get_unchecked(i + 2);
-                *y_out.get_unchecked_mut(i + 2) =
-                    *y_self.get_unchecked(i + 2) - *y_other.get_unchecked(i + 2);
-                *count_out.get_unchecked_mut(i + 2) =
-                    *count_self.get_unchecked(i + 2) - *count_other.get_unchecked(i + 2);
-
-                *grad_out.get_unchecked_mut(i + 3) =
-                    *grad_self.get_unchecked(i + 3) - *grad_other.get_unchecked(i + 3);
-                *hess_out.get_unchecked_mut(i + 3) =
-                    *hess_self.get_unchecked(i + 3) - *hess_other.get_unchecked(i + 3);
-                *y_out.get_unchecked_mut(i + 3) =
-                    *y_self.get_unchecked(i + 3) - *y_other.get_unchecked(i + 3);
-                *count_out.get_unchecked_mut(i + 3) =
-                    *count_self.get_unchecked(i + 3) - *count_other.get_unchecked(i + 3);
-            }
-            i += 4;
+        for i in 0..n {
+            let s = self_slice[i];
+            let o = other_slice[i];
+            out[i] = [
+                s[0] - o[0],
+                s[1] - o[1],
+                s[2] - o[2],
+                s[3] - o[3],
+            ];
         }
 
-        // Handle remaining
-        while i < n {
-            unsafe {
-                *grad_out.get_unchecked_mut(i) =
-                    *grad_self.get_unchecked(i) - *grad_other.get_unchecked(i);
-                *hess_out.get_unchecked_mut(i) =
-                    *hess_self.get_unchecked(i) - *hess_other.get_unchecked(i);
-                *y_out.get_unchecked_mut(i) = *y_self.get_unchecked(i) - *y_other.get_unchecked(i);
-                *count_out.get_unchecked_mut(i) =
-                    *count_self.get_unchecked(i) - *count_other.get_unchecked(i);
-            }
-            i += 1;
-        }
-
-        Self {
-            grad: Array1::from(grad_out),
-            hess: Array1::from(hess_out),
-            y: Array1::from(y_out),
-            count: Array1::from(count_out),
-        }
+        Self { bins: out }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::array;
+    use ndarray::{array, Array1};
 
     fn sample() -> TransposedData {
         // 4 samples x 2 features
@@ -498,10 +539,10 @@ mod tests {
         let hist = t.build_histogram_vectorized(0, &idx, &g.view(), &h.view(), &y.view(), 5);
         for b in 0..5 {
             let members: Vec<usize> = (0..n).filter(|i| i % 5 == b).collect();
-            assert_eq!(hist.count[b], members.len() as f64);
-            assert_eq!(hist.grad[b], members.iter().map(|&i| g[i]).sum::<f64>());
-            assert_eq!(hist.hess[b], members.iter().map(|&i| h[i]).sum::<f64>());
-            assert_eq!(hist.y[b], members.iter().map(|&i| y[i]).sum::<f64>());
+            assert_eq!(hist.bins[b][3], members.len() as f64);
+            assert_eq!(hist.bins[b][0], members.iter().map(|&i| g[i]).sum::<f64>());
+            assert_eq!(hist.bins[b][1], members.iter().map(|&i| h[i]).sum::<f64>());
+            assert_eq!(hist.bins[b][2], members.iter().map(|&i| y[i]).sum::<f64>());
         }
     }
 
@@ -535,7 +576,7 @@ mod tests {
         let p = CachedHistogram::new(vec![5.0; 6], vec![4.0; 6], vec![3.0; 6], vec![2.0; 6]);
         let c = CachedHistogram::new(vec![1.0; 6], vec![1.0; 6], vec![1.0; 6], vec![1.0; 6]);
         let d = p.subtract(&c);
-        assert!(d.grad.iter().all(|&x| x == 4.0) && d.count.iter().all(|&x| x == 1.0));
+        assert!(d.bins.iter().all(|b| b[0] == 4.0 && b[3] == 1.0));
     }
 
     #[test]
@@ -543,9 +584,7 @@ mod tests {
         assert_eq!(bin_index(3, 4), 3);
         assert_eq!(bin_index(4, 4), 4);
         assert_eq!(bin_index(9, 4), 4);
-        assert_eq!(bin_index(i16::MAX, 4), 4);
-        // Negatives never reach here via constructors, but must still be in range.
-        assert!(bin_index(-1, 4) <= 4 && bin_index(i16::MIN, 4) <= 4);
+        assert_eq!(bin_index(255, 4), 4);
     }
 
     #[test]
@@ -553,7 +592,7 @@ mod tests {
         let b = array![[-1i16, 3], [i16::MIN, -7], [2, 0]];
         let a = TransposedData::from_binned(b.clone());
         let v = TransposedData::from_binned_view(b.view());
-        assert_eq!(a.features, array![[0i16, 0, 2], [3, 0, 0]]);
+        assert_eq!(a.features, array![[0u8, 0, 2], [3, 0, 0]]);
         assert_eq!(a.features, v.features);
     }
 
@@ -587,8 +626,8 @@ mod tests {
             &ones.view(),
             3,
         );
-        assert_eq!(hist.grad.to_vec(), vec![1001.0, 100.0, 10.0]);
-        assert_eq!(hist.count.to_vec(), vec![2.0, 1.0, 1.0]);
+        assert_eq!(hist.bins.iter().map(|b| b[0]).collect::<Vec<_>>(), vec![1001.0, 100.0, 10.0]);
+        assert_eq!(hist.bins.iter().map(|b| b[3]).collect::<Vec<_>>(), vec![2.0, 1.0, 1.0]);
     }
 
     #[test]
@@ -599,7 +638,7 @@ mod tests {
         assert!(t.get_feature_values(4).is_empty());
         let e = Array1::<f64>::zeros(0);
         let hist = t.build_histogram_vectorized(2, &[], &e.view(), &e.view(), &e.view(), 4);
-        assert_eq!(hist.count.to_vec(), vec![0.0; 4]);
+        assert_eq!(hist.bins.iter().map(|b| b[3]).collect::<Vec<_>>(), vec![0.0; 4]);
     }
 
     #[test]
@@ -615,7 +654,7 @@ mod tests {
         let a = TransposedData::from_binned(b.clone());
         let v = TransposedData::from_binned_view(b.view());
         assert_eq!(a.features, v.features);
-        assert_eq!(a.features, b.t());
+        assert_eq!(a.features, b.mapv(|v| v as u8).t());
         assert!(a.features.is_standard_layout());
     }
 
@@ -646,31 +685,24 @@ mod tests {
     }
 
     #[test]
-    fn subtract_rejects_each_mismatched_field() {
-        let full = || CachedHistogram::new(vec![1.0; 5], vec![1.0; 5], vec![1.0; 5], vec![1.0; 5]);
-        let short = Array1::<f64>::zeros(3);
-        for side in 0..2 {
-            for field in 0..4 {
-                let mut bad = full();
-                match field {
-                    0 => bad.grad = short.clone(),
-                    1 => bad.hess = short.clone(),
-                    2 => bad.y = short.clone(),
-                    _ => bad.count = short.clone(),
-                }
-                let good = full();
-                let r = std::panic::catch_unwind(|| {
-                    if side == 0 {
-                        bad.subtract(&good)
-                    } else {
-                        good.subtract(&bad)
-                    }
-                });
-                assert!(
-                    r.is_err(),
-                    "mismatch side={side} field={field} was accepted"
-                );
+    fn new_rejects_each_mismatched_field() {
+        let full = || (vec![1.0; 5], vec![1.0; 5], vec![1.0; 5], vec![1.0; 5]);
+        let short = vec![1.0; 3];
+        for field in 0..4 {
+            let (mut g, mut h, mut y, mut c) = full();
+            match field {
+                0 => g = short.clone(),
+                1 => h = short.clone(),
+                2 => y = short.clone(),
+                _ => c = short.clone(),
             }
+            let r = std::panic::catch_unwind(|| {
+                CachedHistogram::new(g, h, y, c);
+            });
+            assert!(
+                r.is_err(),
+                "mismatch field={field} was accepted"
+            );
         }
     }
 
@@ -683,7 +715,7 @@ mod tests {
             vec![2, i16::MAX as i32],
         ];
         let t = TransposedData::from_rows(&rows);
-        assert_eq!(t.features, array![[0i16, 0, 2], [3, i16::MAX, i16::MAX]]);
+        assert_eq!(t.features, array![[0u8, 0, 2], [3, 255, 255]]);
         let from_binned = TransposedData::from_binned(array![[-1i16, 3], [i16::MIN, 0], [2, 0]]);
         assert_eq!(t.features.row(0), from_binned.features.row(0));
         // negative -> bin 0, saturated -> last bin
@@ -696,7 +728,7 @@ mod tests {
             &ones.view(),
             3,
         );
-        assert_eq!(h0.count.to_vec(), vec![2.0, 0.0, 1.0]);
+        assert_eq!(h0.bins.iter().map(|b| b[3]).collect::<Vec<_>>(), vec![2.0, 0.0, 1.0]);
         let h1 = t.build_histogram_vectorized(
             1,
             &[0, 1, 2],
@@ -705,7 +737,7 @@ mod tests {
             &ones.view(),
             4,
         );
-        assert_eq!(h1.count.to_vec(), vec![0.0, 0.0, 0.0, 3.0]);
+        assert_eq!(h1.bins.iter().map(|b| b[3]).collect::<Vec<_>>(), vec![0.0, 0.0, 0.0, 3.0]);
     }
 
     fn random_case(
@@ -749,10 +781,7 @@ mod tests {
             for f in 0..3 {
                 let a = t.build_histogram_vectorized(f, &idx, &g.view(), &h.view(), &y.view(), nb);
                 let b = t.build_histogram_ordered(f, &idx, &stats, nb);
-                assert_eq!(a.grad, b.grad);
-                assert_eq!(a.hess, b.hess);
-                assert_eq!(a.y, b.y);
-                assert_eq!(a.count, b.count);
+                assert_eq!(a, b);
             }
         }
     }

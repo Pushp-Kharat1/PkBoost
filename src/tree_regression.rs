@@ -30,7 +30,7 @@ pub fn find_best_split_regression(
     params: &TreeParams,
     depth: i32,
 ) -> HistSplitResult {
-    let (grad, hess, y, count) = hist.as_slices();
+    let bins = &hist.bins;
 
     let mut g_total = 0.0;
     let mut h_total = 0.0;
@@ -38,12 +38,12 @@ pub fn find_best_split_regression(
     let mut y_sq_total = 0.0;
     let mut n_total = 0.0;
 
-    for i in 0..grad.len() {
-        g_total += grad[i];
-        h_total += hess[i];
-        y_total += y[i];
-        y_sq_total += y[i] * y[i];
-        n_total += count[i];
+    for &b in bins {
+        g_total += b[0];
+        h_total += b[1];
+        y_total += b[2];
+        y_sq_total += b[2] * b[2];
+        n_total += b[3];
     }
 
     if n_total < params.min_samples_split as f64 {
@@ -63,12 +63,14 @@ pub fn find_best_split_regression(
     let mut y_sq_left = 0.0;
     let mut n_left = 0.0;
 
-    for i in 0..(grad.len().saturating_sub(1)) {
-        gl += grad[i];
-        hl += hess[i];
-        y_left += y[i];
-        y_sq_left += y[i] * y[i];
-        n_left += count[i];
+    let n_splits = bins.len().saturating_sub(1);
+    for i in 0..n_splits {
+        let b = unsafe { *bins.get_unchecked(i) };
+        gl += b[0];
+        hl += b[1];
+        y_left += b[2];
+        y_sq_left += b[2] * b[2];
+        n_left += b[3];
 
         if n_left < 1.0 || hl < params.min_child_weight {
             continue;
